@@ -1,0 +1,39 @@
+# Configuration Streamlit (ce fichier va sur GitHub : il ne contient aucun secret)
+[server]
+maxUploadSize = 10  # Mo par fichier, cohérent avec ingest.MAX_FILE_MB
+
+[browser]
+gatherUsageStats = false
+
+# ---------------------------------------------------------------------------
+# Thème : un jeu de couleurs pour le mode clair, un pour le mode sombre.
+# Chaque utilisateur choisit Clair / Sombre / Système dans le menu ⋮ > Settings.
+# ---------------------------------------------------------------------------
+[theme]
+font = "Geist:https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&display=swap, sans-serif"
+headingFont = "Geist:https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&display=swap, sans-serif"
+headingFontSizes = ["2rem", "1.45rem", "1.15rem"]
+headingFontWeights = [700, 600, 600]
+baseRadius = "0.6rem"
+showWidgetBorder = true
+showSidebarBorder = true
+
+[theme.light]
+primaryColor = "#2B59C3"
+backgroundColor = "#FFFFFF"
+secondaryBackgroundColor = "#F4F5F7"
+textColor = "#1D2129"
+borderColor = "#E3E5EA"
+
+[theme.light.sidebar]
+backgroundColor = "#F8F9FB"
+
+[theme.dark]
+primaryColor = "#7EA2FF"
+backgroundColor = "#121418"
+secondaryBackgroundColor = "#1C1F25"
+textColor = "#E7E9EE"
+borderColor = "#2C3038"
+
+[theme.dark.sidebar]
+backgroundColor = "#16191E"

@@ -1,0 +1,19 @@
+# Secrets : ne JAMAIS les envoyer sur GitHub
+.env
+.streamlit/secrets.toml
+
+# Données générées (cours uploadés, base vectorielle, scores)
+data/
+*.sqlite3
+*.db
+
+# Tes cours de test (ils restent sur ta machine)
+cours_exemple/
+
+# Python / environnement
+.venv/
+__pycache__/
+*.pyc
+
+# macOS
+.DS_Store
