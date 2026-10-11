@@ -3,7 +3,7 @@
 Merci de tester le **Coach de révision** ! Compte 15 à 20 minutes. L'app marche sur
 ordinateur et sur téléphone.
 
-**Lien de l'app :** _(à compléter)_
+**Lien de l'app :https://amonnnn.streamlit.app
 
 ## Avant de commencer
 

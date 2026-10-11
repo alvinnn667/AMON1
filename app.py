@@ -227,6 +227,7 @@ def analyser_fichiers(fichiers: list) -> None:
         statut.update(
             label="Analyse terminée" if not erreurs else f"Analyse terminée, {erreurs} fichier(s) en erreur",
             state="complete" if not erreurs else "error",
+            expanded=bool(erreurs),  # en cas d'erreur, le message reste visible
         )
     st.session_state["upload_n"] = st.session_state.get("upload_n", 0) + 1
     if attente and not erreurs:

@@ -17,3 +17,6 @@ __pycache__/
 
 # macOS
 .DS_Store
+
+# Secrets à copier dans Streamlit Cloud (à supprimer après usage)
+a_copier_dans_streamlit.toml
