@@ -3,8 +3,9 @@ test_qcm.py — Étape 4 : génère un QCM depuis les cours du pseudo "test" et 
 dans le terminal (sans l'enregistrer en base).
 
 Lancement :
-    python test_qcm.py                      # extraits tirés au hasard
+    python test_qcm.py                      # extraits tirés au hasard, 3 questions
     python test_qcm.py "bande de Carson"    # centré sur une notion
+    python test_qcm.py "bande de Carson" 10 # nombre de questions à la fin
 """
 
 import sys
@@ -13,15 +14,17 @@ import time
 import generation
 import llm
 
-notion = " ".join(sys.argv[1:])
+args = sys.argv[1:]
+nb = int(args.pop()) if args and args[-1].isdigit() else 3
+notion = " ".join(args)
 print("Configuration :", llm.describe())
 t0 = time.time()
 try:
-    questions = generation.generer_qcm("test", source=None, notion=notion, nb=3, enregistrer=False)
+    questions = generation.generer_qcm("test", source=None, notion=notion, nb=nb, enregistrer=False)
 except (llm.LLMError, generation.GenerationError) as e:
     raise SystemExit(f"ERREUR : {e}")
 
-print(f"{len(questions)} questions générées en {time.time() - t0:.1f} s\n")
+print(f"{len(questions)} questions générées sur {nb} demandées, en {time.time() - t0:.1f} s\n")
 for i, q in enumerate(questions, start=1):
     print(f"{i}. [{q['notion']}] {q['question']}")
     for j, c in enumerate(q["choix"]):

@@ -60,7 +60,12 @@ Réponds uniquement en JSON, avec exactement ce format :
 
 
 def message_qcm(
-    extraits: list[dict], nb: int, notion: str, notions_existantes: list[str], notions_imposees: list[str] | None = None
+    extraits: list[dict],
+    nb: int,
+    notion: str,
+    notions_existantes: list[str],
+    notions_imposees: list[str] | None = None,
+    deja_posees: list[str] | None = None,
 ) -> str:
     if notions_imposees:
         consigne_notion = (
@@ -70,12 +75,18 @@ def message_qcm(
     else:
         consigne_notion = f"Concentre-toi sur la notion : {notion}.\n" if notion else ""
     existantes = ", ".join(notions_existantes) if notions_existantes else "(aucune pour l'instant)"
+    eviter = ""
+    if deja_posees:
+        eviter = "\nQuestions déjà posées : n'en propose aucune identique ou très proche.\n" + "\n".join(
+            f"- {q}" for q in deja_posees
+        )
     return f"""Extraits du cours :
 
 {format_extraits(extraits)}
 
-Rédige {nb} questions de QCM, en variant les extraits utilisés.
-{consigne_notion}Notions déjà existantes : {existantes}"""
+Rédige exactement {nb} question(s) de QCM, ni plus ni moins, en variant les extraits utilisés.
+La liste "questions" doit contenir {nb} élément(s).
+{consigne_notion}Notions déjà existantes : {existantes}{eviter}"""
 
 
 # ---------------------------------------------------------------------------

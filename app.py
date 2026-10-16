@@ -426,6 +426,16 @@ def afficher_quiz(quiz: dict, prefixe: str) -> None:
     if not questions:
         st.info("Aucune question à afficher.", icon=":material/info:")
         return
+    demandees = quiz.get("demandees", len(questions))
+    if len(questions) < demandees:
+        if prefixe.startswith("rev"):
+            st.caption(f":material/info: {len(questions)} question(s) à revoir dans ce module, sur {demandees} demandées.")
+        else:
+            st.warning(
+                f"{len(questions)} questions sur {demandees} demandées : le cours ne contient pas assez de matière "
+                "différente, ou la limite de l'API gratuite a été atteinte. Relance un QCM pour en avoir d'autres.",
+                icon=":material/info:",
+            )
     reponses = quiz["reponses"]  # {question_id: (choix, correct)}
     signalees = db.questions_signalees(user())
     bonnes = sum(1 for _, ok in reponses.values() if ok)
@@ -493,14 +503,14 @@ def page_qcm() -> None:
                                     required=True, key="mode_qcm")
         if mode == "Automatique":
             st.caption("Le QCM vise en priorité tes notions à retravailler, puis les fragiles et celles jamais travaillées.")
-            nb = st.segmented_control("Nombre de questions", [3, 5, 8], default=5, required=True, key="nb_auto")
+            nb = st.segmented_control("Nombre de questions", [5, 10, 15], default=5, required=True, key="nb_auto")
             lancer = st.button("Générer le QCM", type="primary", icon=":material/play_arrow:", width="stretch")
         else:
             with st.form("form_qcm", border=False):
                 tous = "Tout le module"
                 source = st.selectbox("Fichier", [tous] + sorted(ingest.list_sources(pseudo(), module)))
                 notion = st.text_input("Notion à travailler (facultatif)", placeholder="ex : modulation FM")
-                nb = st.segmented_control("Nombre de questions", [3, 5, 8], default=5, required=True)
+                nb = st.segmented_control("Nombre de questions", [5, 10, 15], default=5, required=True)
                 lancer = st.form_submit_button("Générer le QCM", type="primary", icon=":material/play_arrow:", width="stretch")
 
     if lancer:
@@ -511,7 +521,7 @@ def page_qcm() -> None:
                 else:
                     ids = generation.generer_qcm(pseudo(), None if source == tous else source, notion, nb, module=module)
                     cibles = []
-                quizz[module] = quiz = {"ids": ids, "reponses": {}, "cibles": cibles}
+                quizz[module] = quiz = {"ids": ids, "reponses": {}, "cibles": cibles, "demandees": nb}
             except (llm.LLMError, generation.GenerationError) as e:
                 st.error(str(e), icon=":material/error:")
 
@@ -649,7 +659,7 @@ def page_progres() -> None:
     revisions = etat("revision")
     if lancer:
         ids = db.questions_a_revoir(user(), nb, None if notion == toutes else notion, module)
-        revisions[module] = {"ids": ids, "reponses": {}}
+        revisions[module] = {"ids": ids, "reponses": {}, "demandees": nb}
     if revisions.get(module):
         afficher_quiz(revisions[module], prefixe=f"rev_{module}")
 

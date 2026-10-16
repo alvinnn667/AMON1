@@ -7,18 +7,27 @@ llm.chat_json réessaie si le JSON est invalide, puis on vérifie le fond nous-m
 (la question cite-t-elle un extrait qui existe ?).
 """
 
+import math
 import random
 import re
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, ValidationError, field_validator
 
 import db
 import ingest
 import llm
 import prompts
 
-NB_EXTRAITS_QCM = 6
+NB_EXTRAITS_MIN = 6        # passages du cours donnés au modèle, au minimum
+TAILLE_LOT = 5             # questions demandées par appel : au-delà, les modèles en « oublient »
+MARGE = 0.3                # on en demande ~30 % de plus : certaines seront jetées à la validation
+RELANCES_MAX = 3           # appels supplémentaires autorisés pour compléter un QCM
 LONGUEUR_MIN_EXTRAIT = 250  # on évite les slides quasi vides pour générer des questions
+
+
+def nb_extraits_pour(nb_questions: int) -> int:
+    """Environ un passage de cours par question : 10 questions ne tiennent pas dans 6 passages."""
+    return max(NB_EXTRAITS_MIN, nb_questions)
 
 
 class GenerationError(RuntimeError):
@@ -54,8 +63,12 @@ class QuestionQCM(BaseModel):
         return notion[:1].upper() + notion[1:]
 
 
-class LotQCM(BaseModel):
-    questions: list[QuestionQCM] = Field(min_length=1)
+class LotQCMBrut(BaseModel):
+    """
+    Le lot est accepté dès que c'est une liste d'objets : chaque question est ensuite validée
+    une par une. Une question mal formée est jetée seule, au lieu de faire rejeter tout le lot.
+    """
+    questions: list[dict] = Field(min_length=1)
 
 
 # ---------------------------------------------------------------------------
@@ -95,6 +108,11 @@ def _raison(ligne: dict) -> str:
     return "maîtrisée, pour l'entretenir"
 
 
+def nb_cibles_pour(nb_questions: int) -> int:
+    """Plus le QCM est long, plus il couvre de notions (3 à 5)."""
+    return 3 if nb_questions <= 5 else 4 if nb_questions <= 10 else 5
+
+
 def cibles_adaptatives(pseudo: str, module: str, nb_cibles: int = 3) -> list[dict]:
     """
     Choisit les notions à travailler : d'abord celles à retravailler, puis les fragiles,
@@ -122,46 +140,92 @@ def _extraits_pour(pseudo: str, module: str, notions: list[str], par_notion: int
 # ---------------------------------------------------------------------------
 # QCM
 # ---------------------------------------------------------------------------
+def _question_valide(brut: dict, groupe: list[dict], deja_posees: set[str]) -> QuestionQCM | None:
+    """Valide une question isolée : bon format, extrait existant, pas de doublon. None sinon."""
+    try:
+        q = QuestionQCM.model_validate(brut)
+    except ValidationError:
+        return None
+    if q.extrait > len(groupe):
+        return None  # cite un extrait qui n'existe pas : on ne peut pas sourcer
+    cle = re.sub(r"\W+", " ", q.question.lower()).strip()
+    if cle in deja_posees:
+        return None
+    deja_posees.add(cle)
+    return q
+
+
 def _rediger_qcm(
     pseudo: str, extraits: list[dict], nb: int, notion: str, module: str | None, notions_imposees: list[str] | None = None
 ) -> list[dict]:
-    """Demande le QCM au LLM, vérifie chaque question et la rattache à son extrait source."""
+    """
+    Rédige exactement `nb` questions quand c'est possible :
+      1. les extraits sont répartis en groupes, un par lot de TAILLE_LOT questions ;
+      2. chaque question est validée seule (les mauvaises sont jetées, pas tout le lot) ;
+      3. on demande ~30 % de questions en plus pour compenser celles qui seront jetées ;
+      4. tant qu'il en manque, on redemande les manquantes (RELANCES_MAX appels de plus au maximum),
+         en donnant au modèle celles déjà posées pour éviter les doublons.
+    """
     user = ingest.user_key(pseudo)
-    lot = llm.chat_json(
-        [
-            {"role": "system", "content": prompts.SYSTEME_QCM},
-            {
-                "role": "user",
-                "content": prompts.message_qcm(extraits, nb, notion, db.notions(user, module), notions_imposees),
-            },
-        ],
-        schema=LotQCM,
-        temperature=0.5,  # un peu de variété dans les questions
-    )
+    notions_connues = db.notions(user, module)
     # Pour ranger les questions sous les noms exacts des notions ciblées (casse comprise).
     noms_imposes = {n.lower(): n for n in (notions_imposees or [])}
 
-    questions = []
-    for q in lot.questions[:nb]:
-        if q.extrait > len(extraits):
-            continue  # cite un extrait qui n'existe pas : on ne peut pas sourcer, on jette
-        src = extraits[q.extrait - 1]
+    nb_groupes = max(1, math.ceil(nb / TAILLE_LOT))
+    groupes = [g for g in (extraits[i::nb_groupes] for i in range(nb_groupes)) if g] or [extraits]
 
-        # On mélange les choix : les LLM mettent trop souvent la bonne réponse en premier.
-        ordre = random.sample(range(4), 4)
-        questions.append(
-            {
-                "module": src["module"],
-                "notion": noms_imposes.get(q.notion.lower(), q.notion),
-                "question": q.question,
-                "choix": [q.choix[i] for i in ordre],
-                "bonne_reponse": ordre.index(q.bonne_reponse),
-                "explication": q.explication,
-                "source": src["source"],
-                "page": src["page"],
-                "extrait": src["texte"],
-            }
-        )
+    questions: list[dict] = []
+    deja_posees: set[str] = set()
+    appels_max = nb_groupes + RELANCES_MAX  # ex : 10 questions -> 2 lots + 3 relances au plus
+    for appel in range(appels_max):
+        if len(questions) >= nb:
+            break
+        groupe = groupes[appel % len(groupes)]
+        manquantes = min(TAILLE_LOT, nb - len(questions))
+        demandees = manquantes + math.ceil(manquantes * MARGE)  # le surplus est jeté à la fin
+        try:
+            lot = llm.chat_json(
+                [
+                    {"role": "system", "content": prompts.SYSTEME_QCM},
+                    {
+                        "role": "user",
+                        "content": prompts.message_qcm(
+                            groupe, demandees, notion, notions_connues, notions_imposees,
+                            deja_posees=[q["question"] for q in questions],
+                        ),
+                    },
+                ],
+                schema=LotQCMBrut,
+                temperature=min(0.5 + 0.1 * appel, 0.8),  # un peu plus de variété à chaque relance
+            )
+        except llm.LLMError:
+            if questions:
+                break  # quota atteint en cours de route : on garde les questions déjà prêtes
+            raise
+
+        for brut in lot.questions:
+            if len(questions) >= nb:
+                break
+            q = _question_valide(brut, groupe, deja_posees)
+            if q is None:
+                continue
+            src = groupe[q.extrait - 1]
+            # On mélange les choix : les LLM mettent trop souvent la bonne réponse en premier.
+            ordre = random.sample(range(4), 4)
+            questions.append(
+                {
+                    "module": src["module"],
+                    "notion": noms_imposes.get(q.notion.lower(), q.notion),
+                    "question": q.question,
+                    "choix": [q.choix[i] for i in ordre],
+                    "bonne_reponse": ordre.index(q.bonne_reponse),
+                    "explication": q.explication,
+                    "source": src["source"],
+                    "page": src["page"],
+                    "extrait": src["texte"],
+                }
+            )
+
     if not questions:
         raise GenerationError("Le modèle n'a produit aucune question exploitable. Réessaie.")
     return questions
@@ -175,7 +239,7 @@ def generer_qcm(
     Si enregistrer=True, sauve les questions et renvoie leurs ids ; sinon renvoie les questions.
     """
     notion = notion.strip()
-    extraits = choisir_extraits(pseudo, source, notion, NB_EXTRAITS_QCM, module)
+    extraits = choisir_extraits(pseudo, source, notion, nb_extraits_pour(nb), module)
     questions = _rediger_qcm(pseudo, extraits, nb, notion, module)
     return db.ajouter_questions(ingest.user_key(pseudo), questions) if enregistrer else questions
 
@@ -185,11 +249,15 @@ def generer_qcm_adaptatif(pseudo: str, module: str, nb: int, enregistrer: bool =
     QCM « automatique » : vise les notions faibles ou jamais travaillées du module.
     Renvoie (ids ou questions, cibles) où cibles = [{"notion", "raison"}] pour l'expliquer à l'étudiant.
     """
-    cibles = cibles_adaptatives(pseudo, module)
-    extraits = _extraits_pour(pseudo, module, [c["notion"] for c in cibles]) if cibles else []
+    cibles = cibles_adaptatives(pseudo, module, nb_cibles_pour(nb))
+    if cibles:
+        par_notion = min(4, max(2, math.ceil(nb / len(cibles))))
+        extraits = _extraits_pour(pseudo, module, [c["notion"] for c in cibles], par_notion)
+    else:
+        extraits = []
     if len(extraits) < 2:  # pas encore de carte des notions ni d'historique : on couvre le module au hasard
         cibles = []
-        extraits = choisir_extraits(pseudo, None, "", NB_EXTRAITS_QCM, module)
+        extraits = choisir_extraits(pseudo, None, "", nb_extraits_pour(nb), module)
     questions = _rediger_qcm(pseudo, extraits, nb, "", module, [c["notion"] for c in cibles] or None)
     resultat = db.ajouter_questions(ingest.user_key(pseudo), questions) if enregistrer else questions
     return resultat, cibles
