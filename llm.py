@@ -84,6 +84,10 @@ class LLMError(RuntimeError):
     """Erreur lisible par un humain, affichable telle quelle dans l'interface."""
 
 
+class JSONRefuseError(LLMError):
+    """Aucun modèle n'a produit de JSON valide pour cette requête (on peut réessayer)."""
+
+
 # ---------------------------------------------------------------------------
 # Clients (créés une seule fois grâce au cache)
 # ---------------------------------------------------------------------------
@@ -143,25 +147,45 @@ def chat(messages: list[dict], temperature: float = 0.2, json_mode: bool = False
             ) from e
         return resp.choices[0].message.content or ""
 
-    # Mode api : on essaie les modèles Groq dans l'ordre.
+    # Mode api : on essaie les modèles Groq dans l'ordre. Un modèle « en panne » pour cette
+    # requête (quota, JSON refusé par Groq, erreur serveur) passe la main au suivant.
+    quota_atteint = json_refuse = False
     last_error = None
     for model in GROQ_MODELS:
+        extra = {}
+        if model.startswith("openai/gpt-oss"):
+            # Modèles qui « réfléchissent » avant de répondre : on limite cette réflexion,
+            # sinon ils épuisent leur budget et renvoient parfois une réponse vide.
+            extra["reasoning_effort"] = "low"
         try:
-            resp = _client().chat.completions.create(model=model, **kwargs)
-            return resp.choices[0].message.content or ""
+            resp = _client().chat.completions.create(model=model, **kwargs, **extra)
+            contenu = resp.choices[0].message.content or ""
+            if json_mode and not contenu.strip():
+                json_refuse, last_error = True, None
+                print(f"[llm] {model} : réponse vide, modèle suivant")
+                continue
+            return contenu
         except RateLimitError as e:
-            last_error = e  # quota atteint pour ce modèle -> on tente le suivant
-            continue
+            quota_atteint, last_error = True, e  # quota atteint pour ce modèle -> on tente le suivant
+            print(f"[llm] {model} : quota atteint, modèle suivant")
         except APIConnectionError as e:
             raise LLMError("Impossible de joindre l'API Groq (réseau).") from e
         except APIStatusError as e:
+            last_error = e
             if e.status_code == 401:
-                raise LLMError("Clé GROQ_API_KEY refusée (401). Vérifie-la.") from e
-            if e.status_code in (400, 404) and "model" in str(e).lower():
-                last_error = e  # modèle retiré ou inconnu -> on tente le suivant
-                continue
-            raise LLMError(f"Erreur de l'API Groq ({e.status_code}) : {e.message}") from e
+                raise LLMError("Clé GROQ_API_KEY refusée (401). Vérifie-la dans les secrets.") from e
+            if e.code == "json_validate_failed" or "json_validate_failed" in str(e):
+                # Groq a refusé la sortie du modèle (JSON invalide ou vide) : on essaie le suivant.
+                json_refuse = True
+                print(f"[llm] {model} : JSON refusé par Groq, modèle suivant")
+            elif e.status_code >= 500 or (e.status_code in (400, 404) and "model" in str(e).lower()):
+                print(f"[llm] {model} : erreur {e.status_code}, modèle suivant")  # panne ou modèle retiré
+            else:
+                print(f"[llm] {model} : erreur {e.status_code} : {e.message}")
+                raise LLMError(f"Le service d'IA a renvoyé une erreur ({e.status_code}). Réessaie dans un instant.") from e
 
+    if json_refuse and not quota_atteint:
+        raise JSONRefuseError("Les modèles n'ont pas produit de JSON valide.") from last_error
     raise LLMError(
         "Limite gratuite de l'API atteinte sur tous les modèles. "
         "Réessaie dans une minute."
@@ -189,7 +213,15 @@ def chat_json(
     conversation = list(messages)
     last_error = None
     for _ in range(retries + 1):
-        raw = chat(conversation, temperature=temperature, json_mode=True)
+        try:
+            raw = chat(conversation, temperature=temperature, json_mode=True)
+        except JSONRefuseError as e:
+            # Sortie refusée par l'API elle-même : on réessaie avec un rappel de consigne.
+            last_error = e
+            conversation = list(messages) + [
+                {"role": "user", "content": "Réponds uniquement avec l'objet JSON demandé, complet et bien fermé."}
+            ]
+            continue
         try:
             return schema.model_validate_json(_extract_json(raw))
         except ValidationError as e:
