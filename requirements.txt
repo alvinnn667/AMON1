@@ -1,9 +1,9 @@
 streamlit==1.65.0
-chromadb==1.5.9
 fastembed==0.9.0
 openai==3.28.0
 pymupdf==1.28.2
 pydantic==2.14.0
 python-dotenv==1.2.4
-# SQLite récent pour ChromaDB sur Streamlit Community Cloud (ignoré sur Mac)
-pysqlite3-binary==0.5.4.post2; sys_platform == "linux"
+# Base de données Postgres hébergée (Supabase) + recherche vectorielle pgvector
+psycopg[binary]==3.3.6
+psycopg-pool==3.3.3

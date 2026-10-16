@@ -27,17 +27,20 @@ Si l'information n'y est pas, elle le dit.
 |---|---|
 | `app.py` | Interface Streamlit (pages, navigation, formulaires) |
 | `llm.py` | Abstraction du LLM et des embeddings : mode `local` (Ollama) ou `api` (Groq + fastembed) |
-| `ingest.py` | Lecture des PDF (PyMuPDF), nettoyage, découpage, ChromaDB (une collection par utilisateur) |
+| `ingest.py` | Lecture des PDF (PyMuPDF), nettoyage, découpage, stockage et recherche vectorielle (pgvector) |
 | `rag.py` | Réponses aux questions avec citations |
 | `generation.py` | QCM, QCM adaptatif, fiches, rangement des PDF, carte des notions (JSON validé par pydantic) |
 | `prompts.py` | Tous les prompts, en français |
-| `db.py` | SQLite : questions, réponses, boîtes de Leitner, carte des notions, retours |
+| `db.py` | Questions, réponses, boîtes de Leitner, carte des notions, retours (Postgres) |
+| `storage.py` | Connexion à la base Supabase (pool) et création du schéma `coach` |
+| `migrer_vers_supabase.py` | Migration unique de l'ancien stockage local (SQLite + ChromaDB) |
 | `notif.py` | Copie des signalements et avis sur Telegram |
 | `test_*.py` | Scripts de vérification étape par étape |
 
 ## Installation locale (macOS)
 
-Prérequis : [uv](https://docs.astral.sh/uv/) et [Ollama](https://ollama.com/download).
+Prérequis : [uv](https://docs.astral.sh/uv/), [Ollama](https://ollama.com/download) et un projet
+[Supabase](https://supabase.com) gratuit (base Postgres avec pgvector).
 
 ```bash
 cd coach-revision
@@ -56,6 +59,7 @@ Variables du fichier `.env` :
 |---|---|
 | `LLM_MODE` | `local` (Ollama) ou `api` (Groq + fastembed) |
 | `GROQ_API_KEY` | Clé Groq, nécessaire en mode `api` ([console.groq.com/keys](https://console.groq.com/keys)) |
+| `DATABASE_URL` | Chaîne de connexion Supabase « Session pooler » (obligatoire) |
 | `ADMIN_PASSWORD` | Mot de passe de la page Admin (laisser vide pour la désactiver) |
 | `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` | Facultatif : copie des retours sur Telegram |
 
@@ -88,18 +92,20 @@ python test_telegram.py                 # notification Telegram
 ```toml
 LLM_MODE = "api"
 GROQ_API_KEY = "ta_cle"
+DATABASE_URL = "postgresql://postgres.xxxx:mot_de_passe@aws-0-eu-west-3.pooler.supabase.com:5432/postgres"
 ADMIN_PASSWORD = "ton_mot_de_passe"
 TELEGRAM_BOT_TOKEN = "ton_token"
 TELEGRAM_CHAT_ID = "ton_chat_id"
 ```
 
 Les secrets sont recopiés dans les variables d'environnement au démarrage (`llm.py`).
-`pysqlite3-binary` remplace le SQLite trop ancien de l'hébergeur pour ChromaDB (`ingest.py`).
+Les tables sont créées automatiquement au premier démarrage, dans un schéma privé `coach`
+que l'API publique de Supabase n'expose pas.
 
 ## Limites connues
 
-- Hébergement gratuit et éphémère : les cours et scores des testeurs peuvent être effacés
-  au redémarrage. Les signalements et avis sont copiés sur Telegram.
+- Projet Supabase gratuit : mis en pause après 7 jours sans activité (à réactiver depuis
+  le tableau de bord, les données sont conservées), 500 Mo de base.
 - Le pseudo sépare les espaces mais n'est pas un mot de passe.
 - Quotas gratuits de Groq : en cas de dépassement, l'app bascule sur un autre modèle,
   puis demande de réessayer une minute plus tard.
@@ -109,4 +115,4 @@ Les secrets sont recopiés dans les variables d'environnement au démarrage (`ll
 ## Pistes
 
 Analyse des annales, planning d'examen, algorithme FSRS, comptes utilisateurs,
-stockage durable (base hébergée), OCR des PDF scannés.
+OCR des PDF scannés.

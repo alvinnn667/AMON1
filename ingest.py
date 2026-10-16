@@ -1,9 +1,9 @@
 """
-ingest.py — PDF -> texte par page -> chunks -> embeddings -> ChromaDB.
+ingest.py — PDF -> texte par page -> chunks -> embeddings -> base Postgres (pgvector).
 
-Chaque utilisateur (pseudo) a SA collection ChromaDB : personne ne voit les cours
-d'un autre. Chaque chunk garde ses métadonnées (module, fichier, page) pour pouvoir
-filtrer par module et citer la source exacte.
+Chaque chunk est rattaché à son utilisateur (empreinte du pseudo) : personne ne voit les
+cours d'un autre. Il garde ses métadonnées (module, fichier, page) pour pouvoir filtrer
+par module et citer la source exacte.
 
 L'import se fait en deux temps :
   1. preparer_pdf()   : lecture, découpage et embeddings (rien n'est encore enregistré) ;
@@ -11,33 +11,17 @@ L'import se fait en deux temps :
 """
 
 import hashlib
-import os
 import re
 from collections import Counter
-from functools import lru_cache
-from pathlib import Path
 
-# Streamlit Community Cloud fournit un SQLite trop ancien pour ChromaDB (3.35 minimum).
-# On le remplace par pysqlite3, installé seulement sous Linux (voir requirements.txt).
-# Ce remplacement doit avoir lieu AVANT l'import de chromadb.
-try:
-    import pysqlite3  # noqa: F401
-    import sys
-
-    sys.modules["sqlite3"] = sys.modules.pop("pysqlite3")
-except ImportError:
-    pass  # sur ton Mac, le SQLite fourni est assez récent
-
-import chromadb
 import pymupdf
-from chromadb.config import Settings
 
 import llm
+import storage
 
 # ---------------------------------------------------------------------------
 # Réglages
 # ---------------------------------------------------------------------------
-DATA_DIR = Path(os.getenv("DATA_DIR", "data"))
 MAX_FILE_MB = 10      # taille max d'un PDF
 MAX_FILES = 30        # nombre max de PDF par utilisateur (tous modules confondus)
 MAX_MODULES = 8       # nombre max de modules par utilisateur
@@ -142,31 +126,14 @@ def chunk_text(text: str, size: int = CHUNK_SIZE, overlap: int = CHUNK_OVERLAP) 
 
 
 # ---------------------------------------------------------------------------
-# ChromaDB : une collection par utilisateur
+# Stockage : table chunks (un utilisateur ne lit jamais que ses propres lignes)
 # ---------------------------------------------------------------------------
-@lru_cache(maxsize=1)
-def _chroma() -> chromadb.ClientAPI:
-    # Un dossier par modèle d'embeddings : des vecteurs de modèles différents
-    # ne sont pas comparables entre eux.
-    path = DATA_DIR / "chroma" / llm.embedding_id()
-    path.mkdir(parents=True, exist_ok=True)
-    return chromadb.PersistentClient(path=str(path), settings=Settings(anonymized_telemetry=False))
-
-
 def user_key(pseudo: str) -> str:
     """Identifiant technique dérivé du pseudo (insensible à la casse et aux espaces)."""
     pseudo = pseudo.strip().lower()
     if not pseudo:
         raise IngestError("Pseudo vide.")
     return "user-" + hashlib.sha256(pseudo.encode()).hexdigest()[:20]
-
-
-def _collection(pseudo: str):
-    return _chroma().get_or_create_collection(
-        name=user_key(pseudo),
-        embedding_function=None,                 # on fournit nous-mêmes les vecteurs
-        metadata={"hnsw:space": "cosine"},       # distance cosinus pour la recherche
-    )
 
 
 def nom_module(nom: str) -> str:
@@ -177,39 +144,32 @@ def nom_module(nom: str) -> str:
     return nom[:1].upper() + nom[1:]
 
 
-def _filtre(source: str | None = None, module: str | None = None) -> dict:
-    """Construit le filtre ChromaDB (where) pour un fichier et/ou un module."""
-    conditions = [{"source": source}] if source else []
-    conditions += [{"module": module}] if module else []
-    if not conditions:
-        return {}
-    return {"where": conditions[0] if len(conditions) == 1 else {"$and": conditions}}
+def _vecteur(v) -> str:
+    """Format texte attendu par pgvector : '[0.12,-0.5,...]'."""
+    return "[" + ",".join(repr(float(x)) for x in v) + "]"
 
 
-def _metadonnees(pseudo: str) -> list[dict]:
-    """
-    Métadonnées de tous les chunks de l'utilisateur. Au passage, range dans le module
-    par défaut les cours importés avant l'arrivée des modules (migration automatique).
-    """
-    col = _collection(pseudo)
-    res = col.get(include=["metadatas"])
-    anciens = [(i, m) for i, m in zip(res["ids"], res["metadatas"]) if "module" not in m]
-    if anciens:
-        col.update(
-            ids=[i for i, _ in anciens],
-            metadatas=[{**m, "module": MODULE_PAR_DEFAUT} for _, m in anciens],
-        )
-        for _, m in anciens:
-            m["module"] = MODULE_PAR_DEFAUT
-    return res["metadatas"]
+def _filtre(pseudo: str, source: str | None = None, module: str | None = None) -> tuple[str, list]:
+    """Clause WHERE commune : cet utilisateur, ce modèle d'embeddings, et éventuellement fichier/module."""
+    clause, params = "user_id = %s AND embedding_id = %s", [user_key(pseudo), llm.embedding_id()]
+    if source:
+        clause, params = clause + " AND source = %s", params + [source]
+    if module:
+        clause, params = clause + " AND module = %s", params + [module]
+    return clause, params
 
 
 def list_modules(pseudo: str) -> dict[str, dict[str, int]]:
     """{module: {fichier: nombre_de_chunks}} pour cet utilisateur."""
-    modules: dict[str, Counter] = {}
-    for m in _metadonnees(pseudo):
-        modules.setdefault(m["module"], Counter())[m["source"]] += 1
-    return {mod: dict(fichiers) for mod, fichiers in modules.items()}
+    clause, params = _filtre(pseudo)
+    with storage.connexion() as conn:
+        rows = conn.execute(
+            f"SELECT module, source, count(*) AS nb FROM chunks WHERE {clause} GROUP BY module, source", params
+        ).fetchall()
+    modules: dict[str, dict[str, int]] = {}
+    for r in rows:
+        modules.setdefault(r["module"], {})[r["source"]] = r["nb"]
+    return modules
 
 
 def list_sources(pseudo: str, module: str | None = None) -> dict[str, int]:
@@ -222,16 +182,17 @@ def list_sources(pseudo: str, module: str | None = None) -> dict[str, int]:
 
 
 def delete_source(pseudo: str, filename: str) -> None:
-    _collection(pseudo).delete(where={"source": filename})
+    with storage.connexion() as conn:
+        conn.execute("DELETE FROM chunks WHERE user_id = %s AND source = %s", (user_key(pseudo), filename))
 
 
 def renommer_module(pseudo: str, ancien: str, nouveau: str) -> str:
     """Renomme un module (ou le fusionne avec un module existant du même nom). Renvoie le nom final."""
     nouveau = nom_module(nouveau)
-    col = _collection(pseudo)
-    res = col.get(where={"module": ancien}, include=["metadatas"])
-    if res["ids"]:
-        col.update(ids=res["ids"], metadatas=[{**m, "module": nouveau} for m in res["metadatas"]])
+    with storage.connexion() as conn:
+        conn.execute(
+            "UPDATE chunks SET module = %s WHERE user_id = %s AND module = %s", (nouveau, user_key(pseudo), ancien)
+        )
     return nouveau
 
 
@@ -277,13 +238,19 @@ def enregistrer_pdf(pseudo: str, prep: dict, module: str) -> dict:
     if module not in modules and len(modules) >= MAX_MODULES:
         raise IngestError(f"Maximum {MAX_MODULES} modules. Range ce fichier dans un module existant.")
 
-    delete_source(pseudo, prep["fichier"])
-    _collection(pseudo).add(
-        ids=prep["ids"],
-        documents=prep["docs"],
-        metadatas=[{**m, "module": module} for m in prep["metas"]],
-        embeddings=prep["vecteurs"],
-    )
+    user, emb = user_key(pseudo), llm.embedding_id()
+    lignes = [
+        (user, emb, id_, module, m["source"], m["page"], doc, _vecteur(v))
+        for id_, doc, m, v in zip(prep["ids"], prep["docs"], prep["metas"], prep["vecteurs"])
+    ]
+    with storage.connexion() as conn:  # une seule transaction : tout ou rien
+        conn.execute("DELETE FROM chunks WHERE user_id = %s AND source = %s", (user, prep["fichier"]))
+        with conn.cursor() as cur:
+            cur.executemany(
+                """INSERT INTO chunks (user_id, embedding_id, id, module, source, page, texte, embedding)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s::vector)""",
+                lignes,
+            )
     return {
         "fichier": prep["fichier"],
         "module": module,
@@ -303,12 +270,14 @@ def apercu_fichier(pseudo: str, filename: str, par_page: int = 160, maximum: int
     Plan condensé d'un fichier : le début de chaque page (souvent son titre).
     Sert à extraire la carte des notions sans envoyer tout le cours au LLM.
     """
-    res = _collection(pseudo).get(where={"source": filename}, include=["documents", "metadatas"])
+    clause, params = _filtre(pseudo, source=filename)
+    with storage.connexion() as conn:
+        rows = conn.execute(f"SELECT id, page, texte FROM chunks WHERE {clause}", params).fetchall()
     premiers: dict[int, tuple[int, str]] = {}  # page -> (numéro du chunk, texte)
-    for id_, doc, meta in zip(res["ids"], res["documents"], res["metadatas"]):
-        numero = int(id_.rsplit("|c", 1)[-1])
-        if meta["page"] not in premiers or numero < premiers[meta["page"]][0]:
-            premiers[meta["page"]] = (numero, doc)
+    for r in rows:
+        numero = int(r["id"].rsplit("|c", 1)[-1])
+        if r["page"] not in premiers or numero < premiers[r["page"]][0]:
+            premiers[r["page"]] = (numero, r["texte"])
     lignes = [f"p. {page} : {texte[:par_page].replace(chr(10), ' ')}" for page, (_, texte) in sorted(premiers.items())]
     return "\n".join(lignes)[:maximum]
 
@@ -316,20 +285,14 @@ def apercu_fichier(pseudo: str, filename: str, par_page: int = 160, maximum: int
 # ---------------------------------------------------------------------------
 # Lecture et recherche
 # ---------------------------------------------------------------------------
-def _extrait(doc: str, meta: dict, score: float | None) -> dict:
-    return {
-        "texte": doc,
-        "source": meta["source"],
-        "page": meta["page"],
-        "module": meta.get("module", MODULE_PAR_DEFAUT),
-        "score": score,
-    }
-
-
 def get_chunks(pseudo: str, source: str | None = None, module: str | None = None) -> list[dict]:
     """Tous les chunks de l'utilisateur, d'un module ou d'un fichier, sans recherche."""
-    res = _collection(pseudo).get(include=["documents", "metadatas"], **_filtre(source, module))
-    return [_extrait(doc, meta, None) for doc, meta in zip(res["documents"], res["metadatas"])]
+    clause, params = _filtre(pseudo, source, module)
+    with storage.connexion() as conn:
+        rows = conn.execute(
+            f"SELECT texte, source, page, module FROM chunks WHERE {clause} ORDER BY source, page, id", params
+        ).fetchall()
+    return [{**r, "score": None} for r in rows]
 
 
 def search(
@@ -339,17 +302,17 @@ def search(
     Les k chunks les plus proches de la question, dans un fichier, un module ou partout :
     [{"texte", "source", "page", "module", "score"}], score = similarité cosinus (1 = identique).
     """
-    col = _collection(pseudo)
-    if col.count() == 0:
-        return []
-    qvec = llm.embed([question])[0]
-    res = col.query(
-        query_embeddings=[qvec],
-        n_results=min(k, col.count()),
-        include=["documents", "metadatas", "distances"],
-        **_filtre(source, module),
-    )
+    clause, params = _filtre(pseudo, source, module)
+    qvec = _vecteur(llm.embed([question])[0])
+    with storage.connexion() as conn:
+        rows = conn.execute(
+            f"""SELECT texte, source, page, module, embedding <=> %s::vector AS distance
+                FROM chunks WHERE {clause}
+                ORDER BY distance LIMIT %s""",
+            [qvec, *params, k],
+        ).fetchall()
     return [
-        _extrait(doc, meta, round(1 - dist, 3))
-        for doc, meta, dist in zip(res["documents"][0], res["metadatas"][0], res["distances"][0])
+        {"texte": r["texte"], "source": r["source"], "page": r["page"], "module": r["module"],
+         "score": round(1 - r["distance"], 3)}
+        for r in rows
     ]

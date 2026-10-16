@@ -27,6 +27,7 @@ import llm
 import notif
 import prompts
 import rag
+import storage
 
 st.set_page_config(page_title="Coach de révision", page_icon=":material/school:", layout="centered")
 
@@ -103,13 +104,16 @@ def selecteur_module(cle: str, tous: bool = False) -> str | None:
 def texte_donnees() -> str:
     lignes = []
     if EN_LIGNE:
-        lignes += [
-            ":material/cloud_upload: Les extraits de tes cours sont envoyés à **Groq** (États-Unis) pour générer les réponses.",
-            ":material/history: Version de test : tes cours et tes scores peuvent être **effacés à tout moment**.",
-            ":material/block: N'importe **pas de document confidentiel**.",
-        ]
+        lignes.append(
+            ":material/cloud_upload: Les extraits de tes cours sont envoyés à **Groq** (États-Unis) pour générer les réponses."
+        )
     else:
-        lignes.append(":material/computer: Mode local : tes cours restent sur cet ordinateur.")
+        lignes.append(":material/computer: Mode local : les réponses sont générées sur cet ordinateur (Ollama).")
+    lignes += [
+        ":material/database: Tes cours et ta progression sont conservés dans la base de données de l'app "
+        "(Supabase). Version de test : ils peuvent être réinitialisés si besoin.",
+        ":material/block: N'importe **pas de document confidentiel**.",
+    ]
     lignes.append(
         ":material/badge: Ton pseudo sépare tes cours de ceux des autres, mais ce n'est pas un mot de passe : "
         "choisis-en un peu courant."
@@ -717,14 +721,10 @@ def page_admin() -> None:
     c1.metric("Questions créées", stats["questions"], border=True)
     c2.metric("Signalements", stats["signalements"], border=True)
     c3.metric("Avis", stats["feedback"], border=True)
-    if notif.actif():
-        st.success("Chaque signalement et chaque avis est aussi copié sur ton Telegram.", icon=":material/send:")
-    else:
-        st.warning(
-            "Hébergement éphémère : ces données peuvent disparaître au redémarrage. Configure Telegram "
-            "(TELEGRAM_BOT_TOKEN et TELEGRAM_CHAT_ID) ou télécharge régulièrement les CSV.",
-            icon=":material/warning:",
-        )
+    st.caption(
+        ":material/database: Données conservées dans Supabase."
+        + (" Chaque signalement et avis est aussi copié sur ton Telegram." if notif.actif() else "")
+    )
     for titre, lignes, fichier in (
         ("Questions signalées", db.export_signalements(), "signalements.csv"),
         ("Avis et bugs", db.export_feedback(), "avis.csv"),
@@ -751,6 +751,12 @@ PAGES = {
 }
 PAGE_ADMIN = st.Page(page_admin, title="Admin", icon=":material/admin_panel_settings:", url_path="admin")
 PAGE_CONNEXION = st.Page(page_connexion, title="Connexion", icon=":material/login:", url_path="connexion", default=True)
+
+try:
+    storage.verifier()  # base injoignable : message clair plutôt qu'une erreur au milieu d'une page
+except storage.StorageError as e:
+    st.error(str(e), icon=":material/cloud_off:")
+    st.stop()
 
 barre_laterale()
 afficher_toast_en_attente()

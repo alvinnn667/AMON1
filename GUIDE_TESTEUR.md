@@ -3,14 +3,14 @@
 Merci de tester le **Coach de révision** ! Compte 15 à 20 minutes. L'app marche sur
 ordinateur et sur téléphone.
 
-**Lien de l'app :https://amonnnn.streamlit.app
+**Lien de l'app :** _(à compléter)_
 
 ## Avant de commencer
 
 - **Tes cours sont envoyés à une IA externe.** Les extraits de tes PDF partent chez Groq
   (États-Unis) pour générer les réponses. N'importe pas de document confidentiel ou personnel.
-- **C'est une version de test.** Tes cours et tes scores peuvent être effacés à tout moment,
-  par exemple au redémarrage du serveur.
+- **C'est une version de test.** Tes cours et ta progression sont conservés d'une visite à
+  l'autre, mais la base pourra être réinitialisée si besoin.
 - **Ton pseudo n'est pas un mot de passe.** Quelqu'un qui tape le même pseudo verrait tes
   cours. Choisis-en un original, pas ton nom.
 
@@ -46,10 +46,10 @@ ordinateur et sur téléphone.
 
 | Donnée | Où | Pourquoi |
 |---|---|---|
-| Tes PDF découpés en passages | Serveur de l'app (effaçable) | Retrouver les passages utiles à tes questions |
+| Tes PDF découpés en passages | Base de données de l'app (Supabase) | Retrouver les passages utiles à tes questions |
 | Extraits envoyés à l'IA | Groq, à chaque question ou génération | Rédiger les réponses, QCM et fiches |
-| Tes réponses aux QCM | Serveur de l'app | Calculer ta maîtrise et te reposer tes erreurs |
-| Tes signalements et avis | Serveur de l'app + copie à Alvin (Telegram) | Corriger les erreurs et améliorer l'app |
+| Tes réponses aux QCM | Base de données de l'app (Supabase) | Calculer ta maîtrise et te reposer tes erreurs |
+| Tes signalements et avis | Base de données de l'app + copie à Alvin (Telegram) | Corriger les erreurs et améliorer l'app |
 
 Tes données sont rattachées à une empreinte de ton pseudo, jamais à ton nom ni à ton e-mail.
 L'app ne demande aucun compte.
