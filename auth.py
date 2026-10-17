@@ -23,12 +23,29 @@ import os
 import streamlit as st
 
 
-def connexion_google_active() -> bool:
-    """Vrai si la section [auth] est configurée dans les secrets."""
+CLES_AUTH = ("redirect_uri", "cookie_secret", "client_id", "client_secret", "server_metadata_url")
+
+
+def cles_auth_manquantes() -> list[str] | None:
+    """
+    None si aucune section [auth] (mode développeur), sinon la liste des clés absentes ou vides.
+    Une section [auth] vide ou incomplète ne doit pas activer la connexion : Streamlit, lui,
+    la considère comme absente, et st.user n'aurait alors pas d'attribut is_logged_in.
+    """
     try:
-        return "auth" in st.secrets
+        if "auth" not in st.secrets:
+            return None
+        section = st.secrets["auth"]
     except Exception:  # pas de fichier secrets.toml : mode développeur
-        return False
+        return None
+    if not hasattr(section, "get"):  # ex. auth = "..." au lieu d'une section [auth]
+        return list(CLES_AUTH)
+    return [cle for cle in CLES_AUTH if not str(section.get(cle, "")).strip()]
+
+
+def connexion_google_active() -> bool:
+    """Vrai si la section [auth] est présente et complète dans les secrets."""
+    return cles_auth_manquantes() == []
 
 
 def compte_connecte() -> dict | None:
@@ -37,7 +54,7 @@ def compte_connecte() -> dict | None:
     L'identifiant est une empreinte de l'émetteur + du « sub » Google : stable même si
     l'utilisateur change de nom, et il ne révèle pas l'e-mail.
     """
-    if not st.user.is_logged_in:
+    if not st.user.get("is_logged_in", False):
         return None
     infos = st.user.to_dict()
     sujet = infos.get("sub") or infos.get("email", "")

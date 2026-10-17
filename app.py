@@ -824,6 +824,16 @@ except storage.StorageError as e:
     st.error(str(e), icon=":material/cloud_off:")
     st.stop()
 
+manquantes = auth.cles_auth_manquantes()
+if manquantes:  # section [auth] présente mais incomplète : on le dit plutôt que de planter
+    st.error(
+        "Connexion Google mal configurée : dans les secrets, la section `[auth]` doit contenir "
+        + ", ".join(f"`{cle}`" for cle in manquantes)
+        + ". Vérifie aussi que `[auth]` est placée après toutes les autres lignes.",
+        icon=":material/key_off:",
+    )
+    st.stop()
+
 c = compte()
 if c and st.session_state.get("compte_enregistre") != c["id"]:
     db.enregistrer_compte(c["id"], c["email"], c["nom"])  # une fois par session
