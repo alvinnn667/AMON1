@@ -74,6 +74,9 @@ GROQ_MODELS = [
     ).split(",")
     if m.strip()
 ]
+# Modèle essayé en premier pour les petites tâches (ex. choisir comment répondre) : il a son propre
+# quota gratuit, ce qui préserve celui du gros modèle pour les vraies réponses.
+GROQ_MODELE_LEGER = os.getenv("GROQ_MODELE_LEGER", "llama-3.1-8b-instant").strip()
 FASTEMBED_MODEL = os.getenv(
     "FASTEMBED_MODEL", "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
 )
@@ -122,13 +125,21 @@ def _fastembed_model():
 # ---------------------------------------------------------------------------
 # Génération de texte
 # ---------------------------------------------------------------------------
-def chat(messages: list[dict], temperature: float = 0.2, json_mode: bool = False) -> str:
+def _modeles(leger: bool) -> list[str]:
+    """Ordre des modèles Groq à essayer ; leger=True : le modèle léger d'abord, puis les autres."""
+    if not leger or not GROQ_MODELE_LEGER:
+        return GROQ_MODELS
+    return [GROQ_MODELE_LEGER] + [m for m in GROQ_MODELS if m != GROQ_MODELE_LEGER]
+
+
+def chat(messages: list[dict], temperature: float = 0.2, json_mode: bool = False, leger: bool = False) -> str:
     """
     Envoie une conversation au LLM et renvoie le texte de la réponse.
 
     messages : [{"role": "system"|"user"|"assistant", "content": "..."}]
     json_mode : force le modèle à répondre avec un objet JSON
                 (le prompt doit contenir le mot "JSON", exigence de Groq).
+    leger : petite tâche, on essaie d'abord le modèle léger (mode api seulement).
     """
     kwargs = {"messages": messages, "temperature": temperature}
     if json_mode:
@@ -153,7 +164,7 @@ def chat(messages: list[dict], temperature: float = 0.2, json_mode: bool = False
     # requête (quota, JSON refusé par Groq, erreur serveur) passe la main au suivant.
     quota_atteint = json_refuse = False
     last_error = None
-    for model in GROQ_MODELS:
+    for model in _modeles(leger):
         extra = {}
         if model.startswith("openai/gpt-oss"):
             # Modèles qui « réfléchissent » avant de répondre : on limite cette réflexion,
@@ -283,17 +294,20 @@ def chat_json(
     schema: type[BaseModel],
     retries: int = 2,
     temperature: float = 0.2,
+    leger: bool = False,
 ) -> BaseModel:
     """
     Demande une réponse JSON et la valide avec un modèle pydantic.
     Si le JSON est invalide (ou ne respecte pas le schéma), on renvoie l'erreur
     au LLM et on lui demande de corriger, jusqu'à `retries` fois.
+    leger : petite tâche, modèle léger d'abord (voir chat).
     """
     conversation = list(messages)
     last_error = None
+    options = {"leger": True} if leger else {}  # n'ajoute l'option que si elle sert
     for _ in range(retries + 1):
         try:
-            raw = chat(conversation, temperature=temperature, json_mode=True)
+            raw = chat(conversation, temperature=temperature, json_mode=True, **options)
         except JSONRefuseError as e:
             # Sortie refusée par l'API elle-même : on réessaie avec un rappel de consigne.
             last_error = e

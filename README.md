@@ -4,8 +4,10 @@ Application web qui transforme tes cours PDF en outil de révision : questions-r
 avec la source exacte, QCM qui ciblent tes points faibles, fiches par notion et suivi de
 ta maîtrise. Les cours sont rangés par module (matière).
 
-Principe : tout ce que l'IA affirme vient du cours fourni, avec le fichier et la page.
-Si l'information n'y est pas, elle le dit.
+Principe : l'étudiant sait toujours d'où vient une réponse. Sur le cours, tout est cité avec le
+fichier et la page ; si l'information n'y est pas, l'IA le dit. Dans la page Questions, l'assistant
+peut aussi chercher sur le web (réponse citée avec les liens) ou simplement discuter (réponse
+étiquetée « sans source »).
 
 ## Fonctionnalités
 
@@ -15,6 +17,15 @@ Si l'information n'y est pas, elle le dit.
   `[1]`, `[2]` vers le fichier et la page. Recherche dans un module ou dans tous.
   Le chat a de la mémoire : on peut enchaîner (« et sa formule ? ») et la conversation est
   conservée d'une visite à l'autre. La réponse s'affiche au fur et à mesure (streaming).
+  C'est un vrai assistant : un petit appel au LLM (modèle léger) choisit d'abord comment répondre :
+  - **cours** : d'après les passages du cours, citations `[1]`, `[2]` ;
+  - **web** : question de fait que le cours ne couvre pas (définition précise, chiffre, date,
+    actualité) -> recherche [Tavily](https://tavily.com), réponse citée `[W1]`, `[W2]` avec les liens ;
+  - **discussion** : salutation, conseil, méthode de travail, reformulation -> réponse directe,
+    étiquetée « Réponse générale, sans source ».
+  Sous une réponse « pas dans ton cours », un bouton **Chercher sur le web** relance la question
+  sur le web. Recherches web limitées par jour : 10 par personne et 30 pour toute l'app
+  (le quota gratuit de Tavily est partagé).
 - **QCM** : mode automatique (vise les notions à retravailler, fragiles ou jamais
   travaillées) ou personnalisé (fichier, notion). 4 choix, explication, source.
 - **Fiches** : définition, points clés, formules, pièges classiques, chaque ligne sourcée.
@@ -37,6 +48,9 @@ Si l'information n'y est pas, elle le dit.
 | `llm.py` | Abstraction du LLM et des embeddings : mode `local` (Ollama) ou `api` (Groq + fastembed) |
 | `ingest.py` | Lecture des PDF (PyMuPDF), nettoyage, découpage, stockage et recherche vectorielle (pgvector) |
 | `rag.py` | Réponses aux questions avec citations, mémoire de conversation (reformulation des questions de suivi) |
+| `assistant.py` | Page Questions : choix du mode (cours, web, discussion), recherche web dans les limites du jour, réponse web sans lien ni image |
+| `web.py` | Client de recherche web Tavily (`httpx`), erreurs lisibles |
+| `affichage.py` | Affichage sûr des réponses de l'assistant : Markdown -> HTML sans lien ni image (`markdown-it-py`) |
 | `generation.py` | QCM, QCM adaptatif, fiches, rangement des PDF, carte des notions (JSON validé par pydantic) |
 | `prompts.py` | Tous les prompts, en français |
 | `db.py` | Questions, réponses, boîtes de Leitner, carte des notions, fiches enregistrées, retours (Postgres) |
@@ -68,6 +82,10 @@ Variables du fichier `.env` :
 |---|---|
 | `LLM_MODE` | `local` (Ollama) ou `api` (Groq + fastembed) |
 | `GROQ_API_KEY` | Clé Groq, nécessaire en mode `api` ([console.groq.com/keys](https://console.groq.com/keys)) |
+| `TAVILY_API_KEY` | Facultatif : clé Tavily pour la recherche web ([app.tavily.com](https://app.tavily.com), 1 000 recherches/mois gratuites). Sans clé, pas de recherche web |
+| `WEB_RECHERCHES_PAR_JOUR` | Facultatif : recherches web par personne et par jour (défaut `10`) |
+| `WEB_RECHERCHES_GLOBAL_PAR_JOUR` | Facultatif : recherches web par jour pour toute l'app, tous utilisateurs confondus (défaut `30`) |
+| `GROQ_MODELE_LEGER` | Facultatif : modèle Groq essayé en premier pour le choix du mode (défaut `llama-3.1-8b-instant`) |
 | `DATABASE_URL` | Chaîne de connexion Supabase « Session pooler » (obligatoire) |
 | `ADMIN_EMAILS` | E-mails des administrateurs (connexion Google), séparés par des virgules |
 | `ADMIN_PASSWORD` | Mode développeur seulement : mot de passe de la page Admin |
@@ -120,7 +138,7 @@ vers l'app. Les données restent dans Supabase : le serveur ne stocke rien d'imp
    affichée dans **GitHub > Settings > Deploy keys** du dépôt.
 3. En `deploy` : `git clone git@github.com:<toi>/<depot>.git coach && cd coach`
 4. Créer les secrets, qui ne quittent jamais le serveur :
-   - `.env` : `DOMAIN`, `GROQ_API_KEY`, `DATABASE_URL`, `ADMIN_EMAILS`, `TELEGRAM_*`
+   - `.env` : `DOMAIN`, `GROQ_API_KEY`, `TAVILY_API_KEY`, `DATABASE_URL`, `ADMIN_EMAILS`, `TELEGRAM_*`
      (`LLM_MODE=api` est imposé par `docker-compose.yml`) ;
    - `.streamlit/secrets.toml` : la section `[auth]` de la connexion Google (ci-dessous).
 5. `bash deploy.sh`
@@ -156,8 +174,24 @@ Fichier vide ou absent : l'app reste en mode développeur (pseudo).
 Les tables sont créées automatiquement au premier démarrage, dans un schéma privé `coach`
 que l'API publique de Supabase n'expose pas.
 
-*Alternative gratuite* : Streamlit Community Cloud (dépôt GitHub, secrets collés dans les
-réglages de l'app, section `[auth]` en dernier). Pas de domaine personnalisé.
+*Alternative gratuite* : Streamlit Community Cloud (dépôt GitHub, secrets collés dans
+**Settings > Secrets** de l'app). Pas de domaine personnalisé. Les secrets de premier niveau sont
+recopiés dans les variables d'environnement au démarrage (`llm.py`) ; la section `[auth]` vient
+en dernier, sinon les lignes suivantes lui appartiendraient :
+
+```toml
+LLM_MODE = "api"
+GROQ_API_KEY = "gsk_…"
+TAVILY_API_KEY = "tvly-…"          # facultatif : recherche web
+WEB_RECHERCHES_PAR_JOUR = "10"     # facultatif : par personne
+WEB_RECHERCHES_GLOBAL_PAR_JOUR = "30"  # facultatif : pour toute l'app
+DATABASE_URL = "postgresql://…"
+ADMIN_EMAILS = "toi@gmail.com"
+
+[auth]
+redirect_uri = "https://ton-app.streamlit.app/oauth2callback"
+# … (voir ci-dessus)
+```
 
 ## Limites connues
 
@@ -167,6 +201,13 @@ réglages de l'app, section `[auth]` en dernier). Pas de domaine personnalisé.
   puis demande de réessayer une minute plus tard.
 - PDF scannés (images) non pris en charge : il faut du texte sélectionnable.
 - Mémoire du chat limitée aux 3 derniers échanges (au-delà, le coach ne s'en souvient plus).
+- Recherche web : 1 000 recherches par mois sur l'offre gratuite de Tavily, partagées entre tous
+  les utilisateurs ; au-delà de la limite du jour, l'assistant répond sans web et le dit. Le choix
+  du mode (cours, web, discussion) peut se tromper : le bouton « Chercher sur le web » rattrape
+  les questions de fait classées à tort.
+  Les réponses de l'assistant sont affichées par un analyseur Markdown configuré sans liens ni
+  images (`affichage.py`) : une page web piégée ne peut pas faire écrire au LLM une image qui
+  enverrait la conversation ailleurs. Les seuls liens cliquables sont ceux de la liste « Sources web ».
 
 ## Pistes
 

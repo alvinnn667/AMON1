@@ -7,5 +7,8 @@ python-dotenv==1.2.4
 # Base de données Postgres hébergée (Supabase) + recherche vectorielle pgvector
 psycopg[binary]==3.3.6
 psycopg-pool==3.3.3
+# Affichage sûr des réponses de l'IA (affichage.py) : analyseur Markdown sans liens ni images.
+# Pur Python ; souvent déjà présent (via rich), mais on ne compte pas dessus.
+markdown-it-py==4.2.0
 # Données de fuseaux horaires (heure de Paris) : indispensables si le système n'en a pas
 tzdata==2026.5

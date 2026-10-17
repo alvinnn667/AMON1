@@ -9,6 +9,7 @@ Toutes les données de l'app vivent ici, de façon durable :
   - messages_chat : conversations du chat (une par module), pour la mémoire et l'historique
   - fiches       : fiches de révision enregistrées (une par notion et par fichier choisi)
   - signalements, feedback : retours des testeurs
+  - recherches_web : date et heure des recherches web (sans leur contenu), pour la limite par jour
 
 Les tables sont dans un schéma privé « coach » : l'API REST publique de Supabase n'expose
 que le schéma « public », donc ces données ne sont accessibles qu'avec DATABASE_URL.
@@ -154,6 +155,15 @@ CREATE TABLE IF NOT EXISTS {SCHEMA_APP}.feedback (
     mode      TEXT NOT NULL,
     cree_le   TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- Une ligne par recherche web, sans la question : sert seulement à compter les recherches du jour
+-- (le quota gratuit de Tavily est partagé entre tous). Effacées au bout de 2 jours.
+CREATE TABLE IF NOT EXISTS {SCHEMA_APP}.recherches_web (
+    id      BIGSERIAL PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    cree_le TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS recherches_web_user ON {SCHEMA_APP}.recherches_web (user_id, cree_le);
 """
 
 

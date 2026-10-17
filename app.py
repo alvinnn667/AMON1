@@ -16,13 +16,17 @@ Uniquement des composants Streamlit natifs et des icônes Material : pas de CSS 
 
 import csv
 import hmac
+import html
 import io
 import os
 import re
+import time
 from zoneinfo import ZoneInfo
 
 import streamlit as st
 
+import affichage
+import assistant
 import auth
 import db
 import generation
@@ -30,8 +34,8 @@ import ingest
 import llm
 import notif
 import prompts
-import rag
 import storage
+import web
 
 st.set_page_config(page_title="Coach de révision", page_icon=":material/school:", layout="centered")
 
@@ -122,10 +126,19 @@ def texte_donnees() -> str:
     lignes = []
     if EN_LIGNE:
         lignes.append(
-            ":material/cloud_upload: Les extraits de tes cours sont envoyés à **Groq** (États-Unis) pour générer les réponses."
+            ":material/cloud_upload: Tes questions et les extraits de tes cours sont envoyés à **Groq** (États-Unis) "
+            "pour générer les réponses."
         )
     else:
         lignes.append(":material/computer: Mode local : les réponses sont générées sur cet ordinateur (Ollama).")
+    if web.web_disponible():
+        lignes.append(
+            ":material/travel_explore: Quand l'assistant cherche sur le web, ta question reformulée est envoyée à "
+            "**Tavily** (service de recherche web), et les résultats à l'IA pour rédiger la réponse. "
+            f"Limite : {web.nb_recherches(web.limite_par_jour())} par jour et par personne, et "
+            f"{web.nb_recherches(web.limite_globale_par_jour())} par jour pour toute l'app (seules leur date et "
+            "leur heure sont notées pour les compter, et oubliées après 2 jours)."
+        )
     lignes += [
         ":material/database: Tes cours et ta progression sont conservés dans la base de données de l'app "
         "(Supabase). Version de test : ils peuvent être réinitialisés si besoin.",
@@ -442,81 +455,264 @@ def page_cours() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Page « Questions » (chat avec citations)
+# Page « Questions » (assistant : cours avec citations, web sourcé, ou discussion)
 # ---------------------------------------------------------------------------
-def afficher_compris_comme(question_recherche: str | None) -> None:
-    if question_recherche:  # question de suivi réécrite pour la recherche
-        st.caption(f":material/manage_search: Compris comme : {question_recherche}")
+# Origine d'une réponse -> (libellé, couleur, icône). Les anciennes réponses n'ont pas de mode : « cours ».
+ORIGINES = {
+    "cours": ("D'après ton cours", "blue", ":material/menu_book:"),
+    "hors_cours": ("Pas trouvé dans ton cours", "orange", ":material/search_off:"),
+    "web": ("D'après le web", "violet", ":material/travel_explore:"),
+    "hors_web": ("Rien de fiable trouvé sur le web", "orange", ":material/search_off:"),
+    "discussion": ("Réponse générale, sans source", "gray", ":material/forum:"),
+}
+
+
+def origine(res: dict) -> str:
+    mode = res.get("mode") or "cours"
+    if mode == "cours" and res.get("hors_cours"):
+        return "hors_cours"
+    if mode == "web" and res.get("hors_web"):
+        return "hors_web"
+    return mode if mode in ORIGINES else "cours"
+
+
+def texte_inerte(texte: str) -> str:
+    """
+    Texte écrit par l'IA (question reformulée, requête web) glissé dans une légende Markdown : entre
+    accents graves, c'est du code, où Markdown ne crée jamais de lien ni d'image. Les accents graves
+    et retours à la ligne du texte sont retirés pour qu'il ne puisse pas refermer ce code.
+    """
+    return "`" + " ".join(texte.replace("`", "'").split()) + "`"
+
+
+def afficher_entete(res: dict) -> None:
+    """Avant le texte de la réponse : d'où elle vient, et comment la question a été comprise."""
+    libelle, couleur, icone = ORIGINES[origine(res)]
+    st.badge(libelle, icon=icone, color=couleur)
+    web_utilise = res.get("mode") == "web" and res.get("requete_web")
+    if res.get("question_recherche") and res["question_recherche"] != (web_utilise or None):
+        st.caption(f":material/manage_search: Compris comme : {texte_inerte(res['question_recherche'])}")
+    if web_utilise:  # exactement ce qui a été envoyé à Tavily
+        st.caption(f":material/travel_explore: Recherche web : {texte_inerte(res['requete_web'])}")
+    if res.get("web_indisponible"):  # explique tout de suite pourquoi la réponse est « sans source »
+        raison = res["web_indisponible"]
+        st.caption(f":orange[:material/cloud_off:] Recherche web impossible : {raison[0].lower()}{raison[1:]}")
+
+
+def badge_markdown(cle: str) -> str:
+    """Étiquette d'origine écrite en Markdown, pour la glisser dans un texte (légende de l'accueil)."""
+    libelle, couleur, icone = ORIGINES[cle]
+    return f":{couleur}-badge[{icone} {libelle}]"
 
 
 def afficher_reponse(res: dict) -> None:
-    afficher_compris_comme(res.get("question_recherche"))
-    st.markdown(res["reponse"])
+    afficher_entete(res)
+    if res["reponse"]:
+        st.html(affichage.rendu_sur(res["reponse"]))  # jamais st.markdown : voir affichage.py
     afficher_sources(res)
+
+
+EXTRAIT_WEB_AFFICHE = 280  # caractères : l'extrait complet est sur la page, via le lien
 
 
 def afficher_sources(res: dict) -> None:
     if res.get("sans_citation"):
-        st.warning("Cette réponse ne cite aucun passage : vérifie-la dans ton cours.", icon=":material/warning:")
+        if res.get("mode") == "web":
+            st.warning("Cette réponse ne cite aucun résultat web : vérifie-la.", icon=":material/warning:")
+        else:
+            st.warning("Cette réponse ne cite aucun passage : vérifie-la dans ton cours.", icon=":material/warning:")
     if res.get("sources"):
-        with st.expander(f"Sources ({len(res['sources'])})", icon=":material/menu_book:"):
+        with st.expander(f"Sources du cours ({len(res['sources'])})", icon=":material/menu_book:"):
             for s in res["sources"]:
                 module = f"{s['module']} : " if res.get("tous_modules") else ""
                 st.markdown(f"**[{s['numero']}]** {module}{s['source']}, page {s['page']}")
-                st.caption(s["texte"])
+                st.caption(texte_extrait(s["texte"]))  # une ligne, sans Markdown ni LaTeX involontaire
+    if res.get("sources_web"):
+        with st.expander(f"Sources web ({len(res['sources_web'])})", icon=":material/travel_explore:"):
+            for s in res["sources_web"]:
+                extrait = s["extrait"]
+                if len(extrait) > EXTRAIT_WEB_AFFICHE:
+                    extrait = extrait[:EXTRAIT_WEB_AFFICHE].rsplit(" ", 1)[0] + "…"
+                # Titre et extrait viennent de la page web : échappés, en HTML construit ici. Le seul lien
+                # est celui de la vraie source. Le site d'abord : c'est lui qui dit si la source est fiable.
+                st.html(
+                    f"<div class='reponse-ia'><p><strong>[W{s['numero']}]</strong> "
+                    f"{affichage.lien_source(s['titre'], s['url'])}<br><small><strong>{html.escape(s['domaine'])}"
+                    f"</strong> · {html.escape(' '.join(extrait.split()))}</small></p></div>"
+                )
+
+
+def demander_web(question: str, requete: str) -> None:
+    """Rappel du bouton « Chercher sur le web » : la question sera traitée au prochain affichage."""
+    st.session_state["question_web"] = {"id": identifiant(), "question": question, "requete": requete}
+
+
+# L'assistant propose une recherche web (« chercher sur le web », « une recherche web »…), pas « webinaire ».
+PROPOSE_WEB = re.compile(r"chercher sur (le )?web|recherches? (sur (le )?)?web\b", re.IGNORECASE)
+
+
+def bouton_chercher_web(res: dict, question: str, cle: str) -> None:
+    """Sous une réponse sans source (pas dans le cours, ou discussion) : relancer la question sur le web."""
+    if not web.web_disponible() or res.get("web_indisponible"):
+        return
+    pas_dans_le_cours = origine(res) == "hors_cours"
+    # En discussion, seulement si l'assistant propose lui-même de vérifier sur le web (fait précis).
+    propose = res.get("mode") == "discussion" and PROPOSE_WEB.search(res["reponse"]) is not None
+    if not (pas_dans_le_cours or propose):
+        return
+    limite = assistant.limite_web_atteinte(identifiant())
+    if limite:  # personnelle ou de l'app : le message dit laquelle
+        st.caption(f":material/block: {limite}")
+        return
+    restantes = assistant.recherches_web_restantes(identifiant())
+    st.button(
+        "Chercher sur le web",
+        key=cle,
+        icon=":material/travel_explore:",
+        help=f"Il te reste {web.nb_recherches(restantes)} aujourd'hui.",
+        type="secondary" if pas_dans_le_cours else "tertiary",
+        on_click=demander_web,
+        args=(question, res.get("question_recherche") or question),
+    )
+
+
+INTERVALLE_AFFICHAGE = 0.1  # secondes entre deux mises à jour de la réponse en cours d'écriture
+
+
+def afficher_en_direct(flux) -> str:
+    """
+    La réponse au fil de l'eau (streaming) : on réaffiche tout le texte reçu, toujours par
+    affichage.rendu_sur (jamais de lien ni d'image), au plus toutes les 0,1 s, puis une dernière fois.
+    Une coupure du flux (LLMError) remonte à l'appelant.
+    """
+    zone, texte, dernier = st.empty(), "", 0.0
+    for morceau in flux:
+        texte += morceau
+        if time.monotonic() - dernier >= INTERVALLE_AFFICHAGE:
+            zone.html(affichage.rendu_sur(texte + " ▌"))  # curseur : la réponse continue
+            dernier = time.monotonic()
+    if texte:
+        zone.html(affichage.rendu_sur(texte))
+    return texte
+
+
+def repondre_en_direct(question: str, module: str | None, historique: list[dict], cle_bouton: str,
+                       requete_web_forcee: str | None = None) -> dict | None:
+    """Affiche la réponse au fil de l'eau. Renvoie le résultat à enregistrer, ou None en cas d'erreur."""
+    try:
+        with st.spinner("Je réfléchis…"):  # reformulation, recherche dans les cours, choix du mode
+            analyse = assistant.analyser(identifiant(), question, module, historique, requete_web_forcee)
+        with st.spinner("Recherche sur le web…" if analyse["mode"] == "web" else "Je réfléchis…"):
+            prep = assistant.preparer(analyse)
+        entete = st.empty()
+        with entete.container():
+            afficher_entete(prep)
+        texte = afficher_en_direct(llm.chat_stream(prep["messages"], temperature=prep["temperature"]))
+        res = assistant.finaliser(texte, prep)
+    except llm.LLMError as e:
+        st.error(str(e), icon=":material/error:")  # rien n'est enregistré : on peut reposer la question
+        return None
+    if origine(res) != origine(prep):  # ex. « Je ne trouve pas… » : l'étiquette passe à « Pas trouvé dans ton cours »
+        with entete.container():
+            afficher_entete(res)
+    res["tous_modules"] = module is None
+    afficher_sources(res)
+    bouton_chercher_web(res, question, cle_bouton)
+    return res
+
+
+def choisir_suggestion(cle: str) -> None:
+    """Clic sur une suggestion de l'accueil : elle sera posée comme une question au prochain affichage."""
+    st.session_state["question_suggeree"] = {"id": identifiant(), "question": st.session_state.get(cle)}
+    st.session_state[cle] = None  # la pastille ne reste pas sélectionnée
+
+
+def afficher_accueil(a_des_cours: bool, module: str | None, cle_module: str) -> None:
+    """Conversation vide : ce que l'assistant sait faire, ses étiquettes de source et quelques idées de questions."""
+    with st.chat_message("assistant", avatar=AVATARS["assistant"]):
+        if a_des_cours:
+            portee = f"le module **{module}**" if module else "**tous tes modules**"
+            st.markdown(f"Pose-moi une question sur {portee}, une question de culture générale, "
+                        "ou demande-moi un conseil de méthode.")
+        else:
+            st.markdown("Pose-moi une question de culture générale, ou demande-moi un conseil de méthode.")
+        # Légende : les mêmes étiquettes qu'en tête de chaque réponse.
+        origines = (["cours"] if a_des_cours else []) + (["web"] if web.web_disponible() else []) + ["discussion"]
+        st.markdown(":small[:gray[Chaque réponse dit d'où elle vient :]] " + " ".join(badge_markdown(o) for o in origines))
+        idees = []
+        if a_des_cours:
+            noms = ([n["nom"] for n in db.carte_notions(user(), module)] if module else []) or db.notions(user(), module)
+            idees = [f"Explique-moi : {nom}" for nom in noms[:2]]
+        idees.append("Comment bien réviser ?")
+        cle = f"suggestions_{cle_module}"
+        st.pills("Idées de questions", idees, key=cle, on_change=choisir_suggestion, args=(cle,),
+                 label_visibility="collapsed")
 
 
 def page_questions() -> None:
     st.header("Questions")
-    if sans_cours():
-        return
-    module = selecteur_module("questions", tous=True)
+    st.html(affichage.STYLE)  # tableaux, code et liens des réponses (voir affichage.py)
+    a_des_cours = bool(ingest.list_modules(identifiant()))
+    if a_des_cours:
+        module = selecteur_module("questions", tous=True)
+    else:
+        module = None
+        st.info("Tu n'as pas encore de cours. Ajoute un PDF pour des réponses tirées de ton cours, "
+                "avec le fichier et la page.", icon=":material/info:")
+        st.page_link(PAGES["cours"], label="Aller à mes cours", icon=":material/folder_open:")
     cle_module = module or ""  # "" = conversation sur tous les modules
     # La conversation est enregistrée : on la retrouve d'une visite et d'un appareil à l'autre.
     historique = db.messages_chat(user(), cle_module)
+
+    # Lu avant d'afficher l'historique (la zone de saisie reste de toute façon en bas de page).
+    # Placeholder court : il tient sur une ligne sur téléphone.
+    question = st.chat_input("Pose ta question…")
+    demande = st.session_state.pop("question_web", None)  # bouton « Chercher sur le web »
+    suggestion = st.session_state.pop("question_suggeree", None)  # suggestion de l'accueil
+    requete_web_forcee = None
+    if not question and demande and demande["id"] == identifiant():
+        question, requete_web_forcee = demande["question"], demande["requete"]
+    elif not question and suggestion and suggestion["id"] == identifiant() and suggestion["question"]:
+        question = suggestion["question"]
 
     if historique:
         if st.button("Nouvelle conversation", icon=":material/add_comment:", type="tertiary"):
             db.effacer_conversation(user(), cle_module)
             st.rerun()
-    elif module:
-        st.caption(
-            f"Pose une question sur le module {module}. Chaque réponse cite le fichier et la page utilisés, "
-            "et tu peux enchaîner avec des questions de suivi (« et sa formule ? »)."
-        )
-    else:
-        st.caption("La recherche porte sur tous tes modules. Chaque source indique son module, son fichier et sa page.")
+    elif not question:
+        afficher_accueil(a_des_cours, module, cle_module)
 
-    for msg in historique:
+    for i, msg in enumerate(historique):
         with st.chat_message(msg["role"], avatar=AVATARS[msg["role"]]):
             if msg["role"] == "user":
                 st.markdown(msg["contenu"])
             else:
-                afficher_reponse({"reponse": msg["contenu"], **msg["details"]})
+                res = {"reponse": msg["contenu"], **msg["details"]}
+                afficher_reponse(res)
+                # Bouton web sous la dernière réponse seulement (pas si une nouvelle réponse arrive dessous).
+                if i == len(historique) - 1 and not question:
+                    # La question : le dernier message de l'étudiant avant cette réponse (après un clic sur
+                    # « Chercher sur le web », deux réponses se suivent pour la même question).
+                    precedente = next((m["contenu"] for m in reversed(historique[:i]) if m["role"] == "user"), None)
+                    if precedente:
+                        bouton_chercher_web(res, precedente, f"web_{cle_module}_{i}")
 
-    question = st.chat_input("Ta question sur le cours")
     if question:
-        with st.chat_message("user", avatar=AVATARS["user"]):
-            st.markdown(question)
+        if not requete_web_forcee:  # « Chercher sur le web » : la question est déjà affichée juste au-dessus
+            with st.chat_message("user", avatar=AVATARS["user"]):
+                st.markdown(question)
+        # Clé du bouton web : la même qu'au prochain affichage, où cette réponse sera la dernière
+        # (index len(historique) si on n'ajoute que la réponse, len(historique) + 1 avec la question).
+        index = len(historique) if requete_web_forcee else len(historique) + 1
         with st.chat_message("assistant", avatar=AVATARS["assistant"]):
-            try:
-                with st.spinner("Recherche dans tes cours…"):
-                    prep = rag.preparer(identifiant(), question, module, historique=historique)
-                if "reponse_directe" in prep:
-                    res = prep["reponse_directe"]
-                    st.markdown(res["reponse"])
-                else:
-                    afficher_compris_comme(prep["question_recherche"])
-                    # La réponse s'affiche au fur et à mesure qu'elle est écrite (streaming).
-                    texte = st.write_stream(llm.chat_stream(prep["messages"], temperature=rag.TEMPERATURE))
-                    res = rag.finaliser(texte if isinstance(texte, str) else "".join(texte), prep)
-                    res["tous_modules"] = module is None
-                    afficher_sources(res)
-            except llm.LLMError as e:
-                st.error(str(e), icon=":material/error:")  # rien n'est enregistré : on peut reposer la question
-                return
+            res = repondre_en_direct(question, module, historique, f"web_{cle_module}_{index}", requete_web_forcee)
+        if res is None:
+            return
         details = {k: v for k, v in res.items() if k != "reponse"}
-        db.ajouter_echange(user(), cle_module, question, res["reponse"], details)
+        if requete_web_forcee:
+            db.ajouter_reponse(user(), cle_module, res["reponse"], details)
+        else:
+            db.ajouter_echange(user(), cle_module, question, res["reponse"], details)
 
 
 # ---------------------------------------------------------------------------

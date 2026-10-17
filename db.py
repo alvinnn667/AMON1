@@ -371,9 +371,42 @@ def ajouter_echange(user: str, module: str, question: str, reponse: str, details
             )
 
 
+def ajouter_reponse(user: str, module: str, reponse: str, details: dict) -> None:
+    """Une réponse seule, sans nouvelle question (bouton « Chercher sur le web » : même question, autre source)."""
+    with storage.connexion() as conn:
+        conn.execute(
+            "INSERT INTO messages_chat (user_id, module, role, contenu, details) VALUES (%s, %s, 'assistant', %s, %s)",
+            (user, module, reponse, Jsonb(details)),
+        )
+
+
 def effacer_conversation(user: str, module: str) -> None:
     with storage.connexion() as conn:
         conn.execute("DELETE FROM messages_chat WHERE user_id = %s AND module = %s", (user, module))
+
+
+# ---------------------------------------------------------------------------
+# Recherches web (limites par jour, à l'heure de Paris : par utilisateur et pour toute l'app)
+# ---------------------------------------------------------------------------
+# Compter dans une petite table à part, et non dans messages_chat : « Nouvelle conversation »
+# efface les messages, ce qui remettrait le compteur à zéro.
+DEBUT_DU_JOUR_SQL = "date_trunc('day', now() AT TIME ZONE 'Europe/Paris') AT TIME ZONE 'Europe/Paris'"
+
+
+def nb_recherches_web_du_jour(user: str | None = None) -> int:
+    """Recherches web depuis minuit : d'un utilisateur, ou de toute l'app avec user=None."""
+    filtre, params = ("user_id = %s AND ", (user,)) if user is not None else ("", ())
+    with storage.connexion() as conn:
+        return conn.execute(
+            f"SELECT count(*) AS n FROM recherches_web WHERE {filtre}cree_le >= {DEBUT_DU_JOUR_SQL}", params
+        ).fetchone()["n"]
+
+
+def compter_recherche_web(user: str) -> None:
+    """Note une recherche web (date et heure seulement) et oublie celles de plus de 2 jours."""
+    with storage.connexion() as conn:
+        conn.execute("DELETE FROM recherches_web WHERE cree_le < now() - interval '2 days'")
+        conn.execute("INSERT INTO recherches_web (user_id) VALUES (%s)", (user,))
 
 
 # ---------------------------------------------------------------------------
