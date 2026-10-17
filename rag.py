@@ -20,6 +20,7 @@ import prompts
 
 NB_EXTRAITS = 5  # nombre de chunks donnés au LLM
 MEMOIRE_ECHANGES = 3  # nombre de questions/réponses précédentes renvoyées au LLM
+TEMPERATURE = 0.1  # peu de créativité : on veut de la fidélité au cours
 TAILLE_MAX_MESSAGE = 700  # caractères gardés par message de l'historique (coût et limite de contexte)
 
 _CITATION = re.compile(r"\s*\[\d+(?:\s*[,;]\s*\d+)*\]")
@@ -73,30 +74,39 @@ def reformuler(question: str, historique: list[dict]) -> str:
     return reecrite
 
 
-def repondre(pseudo: str, question: str, module: str | None = None, historique: list[dict] | None = None) -> dict:
+def preparer(pseudo: str, question: str, module: str | None = None, historique: list[dict] | None = None) -> dict:
     """
-    Renvoie {"reponse", "sources", "hors_cours", "sans_citation", "question_recherche"}.
-    Chaque extrait cité contient : numero, texte, source, page, module, score.
-    module=None : recherche dans tous les modules de l'utilisateur.
-    historique : messages précédents [{"role": "user"|"assistant", "contenu": str}, …] (mémoire).
+    Tout ce qui précède l'écriture de la réponse : reformulation, recherche, messages pour le LLM.
+    Renvoie {"messages", "extraits", "question_recherche"}, ou {"reponse_directe": dict} s'il n'y a
+    rien à demander au LLM (aucun cours indexé).
     """
     echanges = historique_recent(historique)
     question_recherche = reformuler(question, echanges)
     extraits = ingest.search(pseudo, question_recherche, k=NB_EXTRAITS, module=module)
     if not extraits:
         return {
-            "reponse": "Tu n'as encore indexé aucun cours. Ajoute un PDF dans l'onglet « Mes cours ».",
-            "sources": [],
-            "hors_cours": True,
-            "sans_citation": False,
+            "reponse_directe": {
+                "reponse": "Tu n'as encore indexé aucun cours. Ajoute un PDF dans l'onglet « Mes cours ».",
+                "sources": [],
+                "hors_cours": True,
+                "sans_citation": False,
+            }
         }
-
     precise = question_recherche if question_recherche != question else None
     messages = [{"role": "system", "content": prompts.SYSTEME_CHAT}]
     messages += [{"role": m["role"], "content": m["contenu"]} for m in echanges]
     messages.append({"role": "user", "content": prompts.message_chat(question, extraits, precise)})
-    reponse = llm.chat(messages, temperature=0.1).strip()  # peu de créativité : fidélité au cours
+    return {"messages": messages, "extraits": extraits, "question_recherche": precise}
 
+
+def finaliser(reponse: str, prep: dict) -> dict:
+    """
+    Une fois la réponse écrite : sources citées et alertes.
+    Renvoie {"reponse", "sources", "hors_cours", "sans_citation", "question_recherche"}.
+    Chaque extrait cité contient : numero, texte, source, page, module, score.
+    """
+    reponse = reponse.strip()
+    extraits = prep["extraits"]
     hors_cours = prompts.PAS_DANS_LE_COURS.lower().rstrip(".") in reponse.lower()
     numeros = citations_utilisees(reponse, len(extraits))
     sources = [{"numero": n, **extraits[n - 1]} for n in numeros]
@@ -106,5 +116,18 @@ def repondre(pseudo: str, question: str, module: str | None = None, historique: 
         "hors_cours": hors_cours,
         # Une réponse sans aucune citation est suspecte : le modèle a peut-être inventé.
         "sans_citation": not hors_cours and not sources,
-        "question_recherche": precise,
+        "question_recherche": prep["question_recherche"],
     }
+
+
+def repondre(pseudo: str, question: str, module: str | None = None, historique: list[dict] | None = None) -> dict:
+    """
+    Réponse complète en une fois (scripts de test). L'interface, elle, affiche la réponse
+    au fil de l'eau : preparer() -> llm.chat_stream() -> finaliser().
+    module=None : recherche dans tous les modules. historique : messages précédents (mémoire).
+    """
+    prep = preparer(pseudo, question, module, historique)
+    if "reponse_directe" in prep:
+        return prep["reponse_directe"]
+    reponse = llm.chat(prep["messages"], temperature=TEMPERATURE)
+    return finaliser(reponse, prep)

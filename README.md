@@ -14,7 +14,7 @@ Si l'information n'y est pas, elle le dit.
 - **Questions** : réponses rédigées à partir des passages retrouvés (RAG), avec citations
   `[1]`, `[2]` vers le fichier et la page. Recherche dans un module ou dans tous.
   Le chat a de la mémoire : on peut enchaîner (« et sa formule ? ») et la conversation est
-  conservée d'une visite à l'autre.
+  conservée d'une visite à l'autre. La réponse s'affiche au fur et à mesure (streaming).
 - **QCM** : mode automatique (vise les notions à retravailler, fragiles ou jamais
   travaillées) ou personnalisé (fichier, notion). 4 choix, explication, source.
 - **Fiches** : définition, points clés, formules, pièges classiques, chaque ligne sourcée.

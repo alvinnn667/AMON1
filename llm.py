@@ -21,10 +21,12 @@ client (la librairie `openai`) suffit pour les deux modes.
 import json
 import os
 import re
+from collections.abc import Iterator
 from functools import lru_cache
 
+import httpx  # installé avec openai : erreurs réseau pendant un flux
 from dotenv import load_dotenv
-from openai import APIConnectionError, APIStatusError, OpenAI, RateLimitError
+from openai import APIConnectionError, APIError, APIStatusError, OpenAI, RateLimitError
 from pydantic import BaseModel, ValidationError
 
 # Charge le fichier .env s'il existe. Les variables déjà définies dans le
@@ -190,6 +192,83 @@ def chat(messages: list[dict], temperature: float = 0.2, json_mode: bool = False
         "Limite gratuite de l'API atteinte sur tous les modèles. "
         "Réessaie dans une minute."
     ) from last_error
+
+
+def chat_stream(messages: list[dict], temperature: float = 0.2) -> Iterator[str]:
+    """
+    Comme chat(), mais renvoie la réponse morceau par morceau (quelques mots à la fois),
+    au fur et à mesure que le modèle l'écrit. À utiliser avec st.write_stream.
+
+    Bascule entre modèles Groq : possible seulement AVANT le premier morceau (quota, panne…).
+    Une fois la réponse commencée, une coupure lève LLMError : on ne peut pas recoller
+    le début d'un modèle avec la fin d'un autre.
+    """
+    kwargs = {"messages": messages, "temperature": temperature, "stream": True}
+
+    if LLM_MODE == "local":
+        try:
+            flux = _client().chat.completions.create(model=OLLAMA_MODEL, **kwargs)
+        except APIConnectionError as e:
+            raise LLMError(
+                "Impossible de joindre Ollama. Vérifie que l'application Ollama est "
+                "lancée (icône lama dans la barre des menus)."
+            ) from e
+        except APIStatusError as e:
+            raise LLMError(
+                f"Ollama a répondu une erreur ({e.status_code}). Le modèle "
+                f"'{OLLAMA_MODEL}' est-il installé ? -> ollama pull {OLLAMA_MODEL}"
+            ) from e
+        yield from _morceaux(flux)
+        return
+
+    last_error = None
+    for model in GROQ_MODELS:
+        extra = {"reasoning_effort": "low"} if model.startswith("openai/gpt-oss") else {}
+        try:
+            # Les erreurs de quota ou de modèle arrivent ici, avant tout texte : on peut basculer.
+            flux = _client().chat.completions.create(model=model, **kwargs, **extra)
+        except RateLimitError as e:
+            last_error = e
+            print(f"[llm] {model} : quota atteint, modèle suivant")
+            continue
+        except APIConnectionError as e:
+            raise LLMError("Impossible de joindre l'API Groq (réseau).") from e
+        except APIStatusError as e:
+            last_error = e
+            if e.status_code == 401:
+                raise LLMError("Clé GROQ_API_KEY refusée (401). Vérifie-la dans les secrets.") from e
+            if e.status_code >= 500 or (e.status_code in (400, 404) and "model" in str(e).lower()):
+                print(f"[llm] {model} : erreur {e.status_code}, modèle suivant")
+                continue
+            print(f"[llm] {model} : erreur {e.status_code} : {e.message}")
+            raise LLMError(f"Le service d'IA a renvoyé une erreur ({e.status_code}). Réessaie dans un instant.") from e
+        yield from _morceaux(flux)
+        return
+
+    raise LLMError("Limite gratuite de l'API atteinte sur tous les modèles. Réessaie dans une minute.") from last_error
+
+
+def _morceaux(flux) -> Iterator[str]:
+    """
+    Extrait le texte de chaque morceau du flux. Une coupure en cours de route devient une LLMError.
+    Un flux complet se termine par un morceau portant finish_reason ("stop", ou "length" si la
+    réponse a atteint la longueur maximale) : sans lui, la connexion a été coupée en silence.
+    """
+    fin = None
+    try:
+        for morceau in flux:
+            if not morceau.choices:
+                continue
+            choix = morceau.choices[0]
+            if choix.delta and choix.delta.content:
+                yield choix.delta.content
+            fin = choix.finish_reason or fin
+    except (APIError, httpx.HTTPError) as e:
+        raise LLMError("La réponse a été interrompue (réseau ou limite de l'API). Repose ta question.") from e
+    if fin is None:
+        raise LLMError("La réponse a été interrompue avant la fin. Repose ta question.")
+    if fin == "length":
+        yield "\n\n*(Réponse coupée : elle dépassait la longueur maximale.)*"
 
 
 def _extract_json(raw: str) -> str:

@@ -428,10 +428,18 @@ def page_cours() -> None:
 # ---------------------------------------------------------------------------
 # Page « Questions » (chat avec citations)
 # ---------------------------------------------------------------------------
+def afficher_compris_comme(question_recherche: str | None) -> None:
+    if question_recherche:  # question de suivi réécrite pour la recherche
+        st.caption(f":material/manage_search: Compris comme : {question_recherche}")
+
+
 def afficher_reponse(res: dict) -> None:
-    if res.get("question_recherche"):  # question de suivi réécrite pour la recherche
-        st.caption(f":material/manage_search: Compris comme : {res['question_recherche']}")
+    afficher_compris_comme(res.get("question_recherche"))
     st.markdown(res["reponse"])
+    afficher_sources(res)
+
+
+def afficher_sources(res: dict) -> None:
     if res.get("sans_citation"):
         st.warning("Cette réponse ne cite aucun passage : vérifie-la dans ton cours.", icon=":material/warning:")
     if res.get("sources"):
@@ -475,14 +483,22 @@ def page_questions() -> None:
         with st.chat_message("user", avatar=AVATARS["user"]):
             st.markdown(question)
         with st.chat_message("assistant", avatar=AVATARS["assistant"]):
-            with st.spinner("Recherche dans tes cours…"):
-                try:
-                    res = rag.repondre(identifiant(), question, module, historique=historique)
+            try:
+                with st.spinner("Recherche dans tes cours…"):
+                    prep = rag.preparer(identifiant(), question, module, historique=historique)
+                if "reponse_directe" in prep:
+                    res = prep["reponse_directe"]
+                    st.markdown(res["reponse"])
+                else:
+                    afficher_compris_comme(prep["question_recherche"])
+                    # La réponse s'affiche au fur et à mesure qu'elle est écrite (streaming).
+                    texte = st.write_stream(llm.chat_stream(prep["messages"], temperature=rag.TEMPERATURE))
+                    res = rag.finaliser(texte if isinstance(texte, str) else "".join(texte), prep)
                     res["tous_modules"] = module is None
-                except llm.LLMError as e:
-                    st.error(str(e), icon=":material/error:")  # rien n'est enregistré : on peut reposer la question
-                    return
-            afficher_reponse(res)
+                    afficher_sources(res)
+            except llm.LLMError as e:
+                st.error(str(e), icon=":material/error:")  # rien n'est enregistré : on peut reposer la question
+                return
         details = {k: v for k, v in res.items() if k != "reponse"}
         db.ajouter_echange(user(), cle_module, question, res["reponse"], details)
 
