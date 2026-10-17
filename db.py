@@ -8,6 +8,7 @@ jamais par le pseudo en clair. La connexion et le schéma sont gérés par stora
 
 from psycopg.types.json import Jsonb
 
+import ingest
 import storage
 
 NB_BOITES = 3  # Leitner simple : boîte 1 = à revoir souvent … boîte 3 = maîtrisée
@@ -329,3 +330,66 @@ def statistiques() -> dict:
             "signalements": un("SELECT count(*) FROM signalements"),
             "feedback": un("SELECT count(*) FROM feedback"),
         }
+
+
+# ---------------------------------------------------------------------------
+# Comptes (connexion Google)
+# ---------------------------------------------------------------------------
+def enregistrer_compte(compte_id: str, email: str, nom: str) -> None:
+    """Crée le compte à la première connexion, met à jour e-mail, nom et date de visite ensuite."""
+    with storage.connexion() as conn:
+        conn.execute(
+            """INSERT INTO comptes (id, email, nom) VALUES (%s, %s, %s)
+               ON CONFLICT (id) DO UPDATE SET email = EXCLUDED.email, nom = EXCLUDED.nom, derniere_visite = now()""",
+            (compte_id, email, nom),
+        )
+
+
+class RecuperationError(ValueError):
+    """Message lisible : pseudo inconnu ou déjà récupéré."""
+
+
+def recuperer_pseudo(compte_id: str, pseudo: str) -> dict:
+    """
+    Rattache à un compte les cours et la progression d'un ancien pseudo (avant les comptes).
+    Une seule fois par pseudo : ensuite, ces données appartiennent au compte.
+    Renvoie le nombre d'éléments déplacés par type.
+    """
+    ancien = ingest.user_key(pseudo)
+    if not ancien.startswith("user-"):
+        raise RecuperationError("Indique le pseudo que tu utilisais avant, pas un identifiant de compte.")
+    with storage.connexion() as conn:  # une seule transaction : tout est déplacé, ou rien
+        if conn.execute("SELECT 1 FROM pseudos_recuperes WHERE pseudo_key = %s", (ancien,)).fetchone():
+            raise RecuperationError("Les données de ce pseudo ont déjà été récupérées par un compte.")
+
+        bilan = {}
+        # Passages de cours : si le compte a déjà importé le même fichier, on garde sa version.
+        conn.execute(
+            """DELETE FROM chunks o WHERE o.user_id = %s AND EXISTS (
+                   SELECT 1 FROM chunks n WHERE n.user_id = %s AND n.embedding_id = o.embedding_id AND n.id = o.id)""",
+            (ancien, compte_id),
+        )
+        bilan["passages"] = conn.execute(
+            "UPDATE chunks SET user_id = %s WHERE user_id = %s", (compte_id, ancien)
+        ).rowcount
+        for table in ("questions", "reponses", "signalements", "feedback"):
+            bilan[table] = conn.execute(
+                f"UPDATE {table} SET user_id = %s WHERE user_id = %s", (compte_id, ancien)
+            ).rowcount
+        # Carte des notions : une notion déjà présente dans le compte n'est pas dupliquée.
+        bilan["notions"] = conn.execute(
+            """UPDATE notions o SET user_id = %s WHERE o.user_id = %s AND NOT EXISTS (
+                   SELECT 1 FROM notions n WHERE n.user_id = %s AND n.module = o.module AND n.nom = o.nom)""",
+            (compte_id, ancien, compte_id),
+        ).rowcount
+        conn.execute("DELETE FROM notions WHERE user_id = %s", (ancien,))
+
+        if not any(bilan.values()):
+            raise RecuperationError("Aucune donnée trouvée pour ce pseudo.")  # annule la transaction
+        conn.execute("INSERT INTO pseudos_recuperes (pseudo_key, compte_id) VALUES (%s, %s)", (ancien, compte_id))
+    return bilan
+
+
+def nb_comptes() -> int:
+    with storage.connexion() as conn:
+        return conn.execute("SELECT count(*) AS n FROM comptes").fetchone()["n"]

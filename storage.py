@@ -98,6 +98,20 @@ CREATE TABLE IF NOT EXISTS {SCHEMA_APP}.signalements (
     cree_le     TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+CREATE TABLE IF NOT EXISTS {SCHEMA_APP}.comptes (
+    id              TEXT PRIMARY KEY,     -- "acct-…" : empreinte de l'identité Google
+    email           TEXT NOT NULL,
+    nom             TEXT NOT NULL,
+    cree_le         TIMESTAMPTZ NOT NULL DEFAULT now(),
+    derniere_visite TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS {SCHEMA_APP}.pseudos_recuperes (
+    pseudo_key TEXT PRIMARY KEY,          -- ancien identifiant "user-…" (empreinte du pseudo)
+    compte_id  TEXT NOT NULL REFERENCES {SCHEMA_APP}.comptes(id) ON DELETE CASCADE,
+    recupere_le TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 CREATE TABLE IF NOT EXISTS {SCHEMA_APP}.feedback (
     id        BIGSERIAL PRIMARY KEY,
     user_id   TEXT NOT NULL,

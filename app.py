@@ -4,9 +4,11 @@ app.py — Interface Streamlit du coach de révision.
 Lancement : streamlit run app.py
 
 Organisation :
-  - Écran de connexion : choix du pseudo + information claire sur les données.
+  - Écran de connexion : compte Google (st.login) + information claire sur les données.
+    Sans section [auth] dans les secrets : mode développeur avec un simple pseudo.
   - Navigation en haut (repliée en menu sur téléphone) : Cours, Questions, QCM,
-    Fiches, Progrès, Avis, et Admin si le mot de passe ADMIN_PASSWORD est saisi.
+    Fiches, Progrès, Avis, et Admin pour les e-mails listés dans ADMIN_EMAILS
+    (ou avec le mot de passe ADMIN_PASSWORD en mode développeur).
   - Les cours sont rangés par module ; chaque page travaille sur le module choisi.
   - Thème clair / sombre / système : menu ⋮ > Settings (couleurs dans .streamlit/config.toml).
 Uniquement des composants Streamlit natifs et des icônes Material : pas de CSS maison.
@@ -20,6 +22,7 @@ import re
 
 import streamlit as st
 
+import auth
 import db
 import generation
 import ingest
@@ -49,17 +52,29 @@ AVATARS = {"user": ":material/person:", "assistant": ":material/school:"}
 # ---------------------------------------------------------------------------
 # Petits utilitaires
 # ---------------------------------------------------------------------------
-def pseudo() -> str:
+CONNEXION_GOOGLE = auth.connexion_google_active()
+
+
+def compte() -> dict | None:
+    """Compte Google connecté ({"id", "email", "nom"}), ou None en mode développeur / déconnecté."""
+    return auth.compte_connecte() if CONNEXION_GOOGLE else None
+
+
+def identifiant() -> str:
+    """Identifiant de l'utilisateur : son compte Google, ou son pseudo en mode développeur. "" si personne."""
+    if CONNEXION_GOOGLE:
+        c = compte()
+        return c["id"] if c else ""
     return st.session_state.get("pseudo_valide", "")
 
 
 def user() -> str:
-    return ingest.user_key(pseudo())
+    return ingest.user_key(identifiant())
 
 
 def etat(nom: str) -> dict:
-    """Dictionnaire de session propre au pseudo courant (historique, quiz…)."""
-    return st.session_state.setdefault(nom, {}).setdefault(pseudo(), {})
+    """Dictionnaire de session propre à l'utilisateur courant (historique, quiz…)."""
+    return st.session_state.setdefault(nom, {}).setdefault(identifiant(), {})
 
 
 def toast_apres_rerun(message: str) -> None:
@@ -75,7 +90,7 @@ def afficher_toast_en_attente() -> None:
 
 def sans_cours() -> bool:
     """Affiche un état vide explicite si aucun cours n'est importé."""
-    if ingest.list_modules(pseudo()):
+    if ingest.list_modules(identifiant()):
         return False
     st.info("Ajoute d'abord un cours en PDF dans la page **Cours**.", icon=":material/info:")
     st.page_link(PAGES["cours"], label="Aller à mes cours", icon=":material/folder_open:")
@@ -87,7 +102,7 @@ def selecteur_module(cle: str, tous: bool = False) -> str | None:
     Choix du module de travail, partagé entre les pages (QCM, Fiches, Progrès…).
     Avec tous=True, propose aussi « Tous les modules » (renvoie alors None).
     """
-    modules = sorted(ingest.list_modules(pseudo()))
+    modules = sorted(ingest.list_modules(identifiant()))
     options = ([TOUS_LES_MODULES] if tous else []) + modules
     if st.session_state.get(f"memo_{cle}") == TOUS_LES_MODULES and tous:
         memo = TOUS_LES_MODULES
@@ -114,10 +129,16 @@ def texte_donnees() -> str:
         "(Supabase). Version de test : ils peuvent être réinitialisés si besoin.",
         ":material/block: N'importe **pas de document confidentiel**.",
     ]
-    lignes.append(
-        ":material/badge: Ton pseudo sépare tes cours de ceux des autres, mais ce n'est pas un mot de passe : "
-        "choisis-en un peu courant."
-    )
+    if CONNEXION_GOOGLE:
+        lignes.append(
+            ":material/badge: Ton compte Google sert seulement à t'identifier : l'app enregistre ton e-mail et "
+            "ton nom, rien d'autre. Personne d'autre ne peut voir tes cours."
+        )
+    else:
+        lignes.append(
+            ":material/badge: Mode développeur : ton pseudo sépare tes cours de ceux des autres, "
+            "mais ce n'est pas un mot de passe."
+        )
     lignes.append(
         ":material/forum: Tes réponses aux QCM, tes signalements et tes avis sont enregistrés pour améliorer l'app"
         + (" et transmis à son créateur." if notif.actif() else ".")
@@ -126,7 +147,7 @@ def texte_donnees() -> str:
 
 
 # ---------------------------------------------------------------------------
-# Connexion (choix du pseudo)
+# Connexion (Google, ou pseudo en mode développeur)
 # ---------------------------------------------------------------------------
 def page_connexion() -> None:
     st.title("Coach de révision")
@@ -138,9 +159,20 @@ def page_connexion() -> None:
     with st.container(border=True):
         st.markdown("**Avant de commencer**")
         st.markdown(texte_donnees())
+    compris = st.checkbox("J'ai lu comment mes données sont utilisées")
+
+    if CONNEXION_GOOGLE:
+        st.button(
+            "Continuer avec Google", type="primary", icon=":material/login:", width="stretch",
+            disabled=not compris, on_click=st.login,
+        )
+        st.caption("Coche la case pour activer la connexion. Ton mot de passe Google n'est jamais transmis à l'app.")
+        return
+
+    # Mode développeur : pas de section [auth] dans les secrets -> simple pseudo.
+    st.caption(":material/code: Mode développeur : la connexion Google n'est pas configurée, on utilise un pseudo.")
     with st.form("connexion", border=False):
         saisie = st.text_input("Choisis un pseudo", placeholder="ex : alvin-m1", max_chars=30)
-        compris = st.checkbox("J'ai lu comment mes données sont utilisées")
         if st.form_submit_button("Commencer", type="primary", icon=":material/arrow_forward:", width="stretch"):
             saisie = saisie.strip()
             if not re.fullmatch(r"[\w.-]{3,30}", saisie):
@@ -155,18 +187,51 @@ def page_connexion() -> None:
 # ---------------------------------------------------------------------------
 # Barre latérale
 # ---------------------------------------------------------------------------
+def formulaire_recuperation(c: dict) -> None:
+    """Rattache à son compte les données d'un ancien pseudo (avant l'arrivée des comptes)."""
+    with st.expander("Récupérer mes données d'avant", icon=":material/move_down:"):
+        st.caption(
+            "Tu utilisais l'app avec un pseudo ? Indique-le pour rattacher tes cours et ta progression "
+            "à ton compte. Possible une seule fois par pseudo."
+        )
+        with st.form("recuperation", border=False, clear_on_submit=True):
+            ancien = st.text_input("Ancien pseudo", max_chars=30)
+            if st.form_submit_button("Récupérer", icon=":material/move_down:"):
+                try:
+                    bilan = db.recuperer_pseudo(c["id"], ancien)
+                except db.RecuperationError as e:
+                    st.error(str(e))
+                    return
+                libelles = {"passages": "passages de cours", "questions": "questions", "reponses": "réponses",
+                            "notions": "notions", "feedback": "avis", "signalements": "signalements"}
+                detail = ", ".join(f"{n} {libelles[k]}" for k, n in bilan.items() if n)
+                toast_apres_rerun(f"Données récupérées : {detail}.")
+                st.rerun()
+
+
 def barre_laterale() -> None:
+    c = compte()
     with st.sidebar:
-        if pseudo():
-            st.markdown(f":material/account_circle: Connecté en tant que **{pseudo()}**")
+        if c:
+            st.markdown(f":material/account_circle: **{c['nom']}**")
+            st.caption(c["email"])
+            st.button("Se déconnecter", icon=":material/logout:", type="tertiary", on_click=st.logout)
+            formulaire_recuperation(c)
+        elif identifiant():
+            st.markdown(f":material/account_circle: Pseudo : **{identifiant()}**")
             if st.button("Changer de pseudo", icon=":material/logout:", type="tertiary"):
                 st.session_state.pop("pseudo_valide", None)
                 st.session_state.pop("module_actif", None)
                 st.rerun()
+        if identifiant():
             with st.expander("Tes données", icon=":material/shield:"):
                 st.markdown(texte_donnees())
                 st.caption(f"Moteur : {llm.describe()}")
-        if ADMIN_PASSWORD:
+
+        # Administration : par e-mail avec Google (ADMIN_EMAILS), par mot de passe en mode développeur.
+        if CONNEXION_GOOGLE:
+            st.session_state["admin"] = bool(c) and auth.est_admin(c["email"])
+        elif ADMIN_PASSWORD:
             with st.expander("Administration", icon=":material/admin_panel_settings:"):
                 mdp = st.text_input("Mot de passe", type="password", key="mdp_admin")
                 if mdp:
@@ -187,8 +252,8 @@ def dialog_supprimer(nom: str, module: str) -> None:
     if annuler.button("Annuler", width="stretch"):
         st.rerun()
     if confirmer.button("Supprimer", type="primary", icon=":material/delete:", width="stretch"):
-        ingest.delete_source(pseudo(), nom)
-        if module not in ingest.list_modules(pseudo()):  # dernier fichier du module : on retire sa carte
+        ingest.delete_source(identifiant(), nom)
+        if module not in ingest.list_modules(identifiant()):  # dernier fichier du module : on retire sa carte
             db.supprimer_carte(user(), module)
         toast_apres_rerun(f"{nom} supprimé.")
         st.rerun()
@@ -200,7 +265,7 @@ def dialog_renommer(module: str) -> None:
     nouveau = st.text_input("Nouveau nom", value=module, max_chars=40)
     if st.button("Renommer", type="primary", icon=":material/edit:", width="stretch"):
         try:
-            final = ingest.renommer_module(pseudo(), module, nouveau)
+            final = ingest.renommer_module(identifiant(), module, nouveau)
         except ingest.IngestError as e:
             st.error(str(e))
             return
@@ -213,7 +278,7 @@ def dialog_renommer(module: str) -> None:
 def analyser_fichiers(fichiers: list) -> None:
     """Étape 1 de l'import : lecture, embeddings et module suggéré par l'IA (rien n'est encore enregistré)."""
     attente = etat("import").setdefault("en_attente", [])
-    modules = sorted(ingest.list_modules(pseudo()))
+    modules = sorted(ingest.list_modules(identifiant()))
     erreurs = 0
     with st.status("Lecture et analyse des fichiers…", expanded=True) as statut:
         for f in fichiers:
@@ -242,7 +307,7 @@ def verifier_import(attente: list) -> None:
     """Étape 2 de l'import : l'étudiant valide ou corrige le module proposé pour chaque fichier."""
     st.subheader("Vérifie le rangement")
     st.caption("Un module est proposé pour chaque fichier d'après son contenu. Corrige si besoin, puis importe.")
-    modules = sorted(ingest.list_modules(pseudo()))
+    modules = sorted(ingest.list_modules(identifiant()))
     proposes = sorted({a["suggestion"]["module"] for a in attente} - set(modules))
     options = modules + proposes + [NOUVEAU_MODULE]
 
@@ -268,13 +333,13 @@ def verifier_import(attente: list) -> None:
             for item, module in zip(attente, choix):
                 nom = item["prep"]["fichier"]
                 try:
-                    stats = ingest.enregistrer_pdf(pseudo(), item["prep"], module)
+                    stats = ingest.enregistrer_pdf(identifiant(), item["prep"], module)
                 except ingest.IngestError as e:
                     bilan.append(f":material/error: {nom} : {e}")
                     continue
                 dernier_module = stats["module"]
                 try:
-                    nouvelles = generation.extraire_notions(pseudo(), stats["module"], nom)
+                    nouvelles = generation.extraire_notions(identifiant(), stats["module"], nom)
                     bilan.append(f":material/check: {nom} rangé dans **{stats['module']}**, {nouvelles} notion(s) ajoutée(s) à la carte")
                 except (llm.LLMError, generation.GenerationError):
                     bilan.append(f":material/check: {nom} rangé dans **{stats['module']}** (carte des notions à relancer plus tard)")
@@ -311,7 +376,7 @@ def page_cours() -> None:
     if fichiers and st.button(f"Analyser {len(fichiers)} fichier(s)", type="primary", icon=":material/search:"):
         analyser_fichiers(fichiers)
 
-    modules = ingest.list_modules(pseudo())
+    modules = ingest.list_modules(identifiant())
     if not modules:
         st.info("Aucun cours pour l'instant. Ajoute tes premiers PDF ci-dessus : ils seront rangés par module.",
                 icon=":material/info:")
@@ -345,7 +410,7 @@ def page_cours() -> None:
                 if st.button(libelle, key=f"carte_{module}", icon=":material/refresh:", type="tertiary"):
                     with st.spinner("Lecture du plan de chaque fichier…"):
                         try:
-                            total = generation.regenerer_carte(pseudo(), module)
+                            total = generation.regenerer_carte(identifiant(), module)
                             toast_apres_rerun(f"Carte de {module} : {total} notion(s).")
                         except (llm.LLMError, generation.GenerationError) as e:
                             st.error(str(e), icon=":material/error:")
@@ -401,7 +466,7 @@ def page_questions() -> None:
         with st.chat_message("assistant", avatar=AVATARS["assistant"]):
             with st.spinner("Recherche dans tes cours…"):
                 try:
-                    res = rag.repondre(pseudo(), question, module)
+                    res = rag.repondre(identifiant(), question, module)
                     res["tous_modules"] = module is None
                 except llm.LLMError as e:
                     res = {"reponse": f":material/error: {e}", "sources": []}
@@ -512,7 +577,7 @@ def page_qcm() -> None:
         else:
             with st.form("form_qcm", border=False):
                 tous = "Tout le module"
-                source = st.selectbox("Fichier", [tous] + sorted(ingest.list_sources(pseudo(), module)))
+                source = st.selectbox("Fichier", [tous] + sorted(ingest.list_sources(identifiant(), module)))
                 notion = st.text_input("Notion à travailler (facultatif)", placeholder="ex : modulation FM")
                 nb = st.segmented_control("Nombre de questions", [5, 10, 15], default=5, required=True)
                 lancer = st.form_submit_button("Générer le QCM", type="primary", icon=":material/play_arrow:", width="stretch")
@@ -521,9 +586,9 @@ def page_qcm() -> None:
         with st.spinner("Rédaction des questions à partir de ton cours…"):
             try:
                 if mode == "Automatique":
-                    ids, cibles = generation.generer_qcm_adaptatif(pseudo(), module, nb)
+                    ids, cibles = generation.generer_qcm_adaptatif(identifiant(), module, nb)
                 else:
-                    ids = generation.generer_qcm(pseudo(), None if source == tous else source, notion, nb, module=module)
+                    ids = generation.generer_qcm(identifiant(), None if source == tous else source, notion, nb, module=module)
                     cibles = []
                 quizz[module] = quiz = {"ids": ids, "reponses": {}, "cibles": cibles, "demandees": nb}
             except (llm.LLMError, generation.GenerationError) as e:
@@ -591,14 +656,14 @@ def page_fiches() -> None:
         st.pills("Notions du module", noms, key=cle_pastilles, on_change=recopier_notion)
     notion = st.text_input("Notion", key=cle_notion, placeholder="Choisis une notion ci-dessus ou écris-en une")
     tous = "Tout le module"
-    source = st.selectbox("Chercher dans", [tous] + sorted(ingest.list_sources(pseudo(), module)))
+    source = st.selectbox("Chercher dans", [tous] + sorted(ingest.list_sources(identifiant(), module)))
     lancer = st.button("Créer la fiche", type="primary", icon=":material/description:", width="stretch")
 
     fiches = etat("fiches").setdefault(module, [])
     if lancer:
         with st.spinner("Rédaction de la fiche à partir de ton cours…"):
             try:
-                fiches.insert(0, generation.generer_fiche(pseudo(), notion, None if source == tous else source, module))
+                fiches.insert(0, generation.generer_fiche(identifiant(), notion, None if source == tous else source, module))
             except (llm.LLMError, generation.GenerationError) as e:
                 st.error(str(e), icon=":material/error:")
     for i, fiche in enumerate(fiches):
@@ -714,7 +779,8 @@ def page_admin() -> None:
     st.header("Retours des testeurs")
     stats = db.statistiques()
     c1, c2, c3 = st.columns(3)
-    c1.metric("Testeurs", stats["testeurs"], border=True)
+    c1.metric("Testeurs actifs", stats["testeurs"], border=True,
+              help=f"{db.nb_comptes()} compte(s) Google créé(s)." if CONNEXION_GOOGLE else None)
     c2.metric("Réponses QCM", stats["reponses"], border=True)
     c3.metric("Réussite moyenne", f"{stats['reussite']:.0f} %" if stats["reussite"] is not None else "–", border=True)
     c1, c2, c3 = st.columns(3)
@@ -758,10 +824,15 @@ except storage.StorageError as e:
     st.error(str(e), icon=":material/cloud_off:")
     st.stop()
 
+c = compte()
+if c and st.session_state.get("compte_enregistre") != c["id"]:
+    db.enregistrer_compte(c["id"], c["email"], c["nom"])  # une fois par session
+    st.session_state["compte_enregistre"] = c["id"]
+
 barre_laterale()
 afficher_toast_en_attente()
 admin = [PAGE_ADMIN] if st.session_state.get("admin") else []
-if pseudo():
+if identifiant():
     navigation = st.navigation(list(PAGES.values()) + admin, position="top")
 else:
     navigation = st.navigation([PAGE_CONNEXION] + admin, position="top" if admin else "hidden")

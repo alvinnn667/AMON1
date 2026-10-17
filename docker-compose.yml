@@ -1,0 +1,45 @@
+# Deux conteneurs sur le serveur :
+#   - app   : le coach de révision (Streamlit), invisible depuis Internet
+#   - caddy : le seul exposé (ports 80 et 443). Il obtient et renouvelle tout seul le certificat
+#             HTTPS (Let's Encrypt) pour ton domaine, puis transmet les requêtes à l'app.
+#
+# Secrets : fichier .env (variables de l'app + DOMAIN) et .streamlit/secrets.toml (section [auth]),
+# créés à la main sur le serveur, jamais dans Git.
+# Lancer / mettre à jour : ./deploy.sh
+
+services:
+  app:
+    build: .
+    env_file: .env
+    environment:
+      LLM_MODE: api  # sur le serveur : Groq + fastembed (pas d'Ollama)
+    volumes:
+      - ./.streamlit/secrets.toml:/app/.streamlit/secrets.toml:ro
+    restart: unless-stopped
+    mem_limit: 2g  # garde-fou : l'app ne peut pas saturer la RAM du serveur
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }  # les logs ne remplissent pas le disque
+
+  caddy:
+    image: caddy:2.10
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"  # HTTP/3
+    environment:
+      DOMAIN: ${DOMAIN:?Ajoute DOMAIN=ton-domaine.fr dans le fichier .env}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data      # certificats HTTPS (conservés entre les redémarrages)
+      - caddy_config:/config
+    depends_on:
+      - app
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+
+volumes:
+  caddy_data:
+  caddy_config:

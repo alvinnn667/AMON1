@@ -34,8 +34,8 @@ load_dotenv()
 
 def _secrets_hebergeur_vers_env() -> None:
     """
-    En ligne (Streamlit Community Cloud), les secrets sont saisis dans les réglages de l'app
-    et lus par st.secrets. On les recopie dans les variables d'environnement pour que tout
+    Sur Streamlit Community Cloud, les secrets sont saisis dans les réglages de l'app
+    et lus par st.secrets (sur le serveur Hetzner, ils arrivent directement par le .env). On les recopie dans les variables d'environnement pour que tout
     le code les lise de la même façon (os.getenv), en local comme en ligne.
     """
     try:

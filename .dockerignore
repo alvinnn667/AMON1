@@ -1,0 +1,13 @@
+# Rien de secret ni de lourd dans l'image Docker
+.env
+.streamlit/secrets.toml
+.git/
+.venv/
+__pycache__/
+*.pyc
+data/
+cours_exemple/
+*.sqlite3
+*.db
+.DS_Store
+caddy_data/

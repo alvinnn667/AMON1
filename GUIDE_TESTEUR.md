@@ -3,7 +3,7 @@
 Merci de tester le **Coach de révision** ! Compte 15 à 20 minutes. L'app marche sur
 ordinateur et sur téléphone.
 
-**Lien de l'app :** _(à compléter)_
+**Lien de l'app :** https://amonnnn.streamlit.app
 
 ## Avant de commencer
 
@@ -11,8 +11,10 @@ ordinateur et sur téléphone.
   (États-Unis) pour générer les réponses. N'importe pas de document confidentiel ou personnel.
 - **C'est une version de test.** Tes cours et ta progression sont conservés d'une visite à
   l'autre, mais la base pourra être réinitialisée si besoin.
-- **Ton pseudo n'est pas un mot de passe.** Quelqu'un qui tape le même pseudo verrait tes
-  cours. Choisis-en un original, pas ton nom.
+- **Connexion avec ton compte Google.** L'app ne voit jamais ton mot de passe : elle reçoit
+  seulement ton e-mail et ton nom. Tu retrouves tes cours sur ordinateur comme sur téléphone.
+- **Tu avais déjà testé avec un pseudo ?** Dans la barre latérale, ouvre **Récupérer mes
+  données d'avant** et tape ton ancien pseudo : tes cours et ta progression passent sur ton compte.
 
 ## Quoi tester
 
@@ -31,7 +33,8 @@ ordinateur et sur téléphone.
    Compare 2 ou 3 lignes avec les extraits cités.
 5. **Regarder ta progression.** Dans **Progrès**, vérifie les couleurs par notion, puis lance
    **Revoir mes erreurs**.
-6. **Sur téléphone.** Ouvre le lien et refais rapidement une étape : est-ce lisible et pratique ?
+6. **Sur téléphone.** Ouvre le lien, connecte-toi avec le même compte Google : retrouves-tu
+   tes cours ? Refais rapidement une étape : est-ce lisible et pratique ?
 
 ## Signaler un problème
 
@@ -46,10 +49,11 @@ ordinateur et sur téléphone.
 
 | Donnée | Où | Pourquoi |
 |---|---|---|
+| Ton e-mail et ton nom (compte Google) | Base de données de l'app (Supabase) | T'identifier et séparer tes cours de ceux des autres |
 | Tes PDF découpés en passages | Base de données de l'app (Supabase) | Retrouver les passages utiles à tes questions |
 | Extraits envoyés à l'IA | Groq, à chaque question ou génération | Rédiger les réponses, QCM et fiches |
 | Tes réponses aux QCM | Base de données de l'app (Supabase) | Calculer ta maîtrise et te reposer tes erreurs |
 | Tes signalements et avis | Base de données de l'app + copie à Alvin (Telegram) | Corriger les erreurs et améliorer l'app |
 
-Tes données sont rattachées à une empreinte de ton pseudo, jamais à ton nom ni à ton e-mail.
-L'app ne demande aucun compte.
+Tes cours, réponses et avis sont rattachés à un identifiant de compte anonyme (une empreinte
+de ton identifiant Google), pas directement à ton e-mail. Personne d'autre ne peut voir tes cours.

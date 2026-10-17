@@ -5,6 +5,11 @@ maxUploadSize = 10  # Mo par fichier, cohérent avec ingest.MAX_FILE_MB
 [browser]
 gatherUsageStats = false
 
+[client]
+# Menu ⋮ réduit à ce qu'un utilisateur utilise (thème, impression) : pas de bouton « Deploy »
+# ni d'options de développeur, même quand l'app tourne sur ton propre serveur.
+toolbarMode = "viewer"
+
 # ---------------------------------------------------------------------------
 # Thème : un jeu de couleurs pour le mode clair, un pour le mode sombre.
 # Chaque utilisateur choisit Clair / Sombre / Système dans le menu ⋮ > Settings.

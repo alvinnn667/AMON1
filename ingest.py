@@ -128,9 +128,16 @@ def chunk_text(text: str, size: int = CHUNK_SIZE, overlap: int = CHUNK_OVERLAP) 
 # ---------------------------------------------------------------------------
 # Stockage : table chunks (un utilisateur ne lit jamais que ses propres lignes)
 # ---------------------------------------------------------------------------
-def user_key(pseudo: str) -> str:
-    """Identifiant technique dérivé du pseudo (insensible à la casse et aux espaces)."""
-    pseudo = pseudo.strip().lower()
+def user_key(identifiant: str) -> str:
+    """
+    Identifiant technique de l'utilisateur, utilisé dans toutes les tables.
+      - compte Google : déjà un identifiant technique ("acct-…", voir auth.py), renvoyé tel quel ;
+      - pseudo (mode développeur et anciens comptes) : empreinte du pseudo, insensible à la casse.
+    """
+    identifiant = identifiant.strip()
+    if identifiant.startswith("acct-"):
+        return identifiant
+    pseudo = identifiant.lower()
     if not pseudo:
         raise IngestError("Pseudo vide.")
     return "user-" + hashlib.sha256(pseudo.encode()).hexdigest()[:20]

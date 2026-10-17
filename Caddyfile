@@ -1,0 +1,20 @@
+# Caddy : HTTPS automatique (Let's Encrypt) et relais vers l'app Streamlit.
+# {$DOMAIN} vient du fichier .env (ex. DOMAIN=coach-revision.fr).
+
+# www.ton-domaine.fr -> ton-domaine.fr
+www.{$DOMAIN} {
+	redir https://{$DOMAIN}{uri} permanent
+}
+
+{$DOMAIN} {
+	encode zstd gzip
+	# Les websockets de Streamlit (/_stcore/stream) sont relayés automatiquement.
+	reverse_proxy app:8501
+
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		-Server
+	}
+}

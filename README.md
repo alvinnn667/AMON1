@@ -18,6 +18,8 @@ Si l'information n'y est pas, elle le dit.
 - **Fiches** : définition, points clés, formules, pièges classiques, chaque ligne sourcée.
 - **Progrès** : maîtrise par notion (sur les 10 dernières réponses) et révision des erreurs
   avec des boîtes de Leitner.
+- **Comptes** : connexion avec Google ; chacun retrouve ses cours sur tous ses appareils.
+  Les données d'un ancien pseudo peuvent être rattachées au compte.
 - **Retours des testeurs** : signalement des questions fausses, avis, page Admin,
   copie sur Telegram.
 
@@ -26,6 +28,7 @@ Si l'information n'y est pas, elle le dit.
 | Fichier | Rôle |
 |---|---|
 | `app.py` | Interface Streamlit (pages, navigation, formulaires) |
+| `auth.py` | Connexion Google (`st.login`) et administrateurs par e-mail |
 | `llm.py` | Abstraction du LLM et des embeddings : mode `local` (Ollama) ou `api` (Groq + fastembed) |
 | `ingest.py` | Lecture des PDF (PyMuPDF), nettoyage, découpage, stockage et recherche vectorielle (pgvector) |
 | `rag.py` | Réponses aux questions avec citations |
@@ -36,6 +39,7 @@ Si l'information n'y est pas, elle le dit.
 | `migrer_vers_supabase.py` | Migration unique de l'ancien stockage local (SQLite + ChromaDB) |
 | `notif.py` | Copie des signalements et avis sur Telegram |
 | `test_*.py` | Scripts de vérification étape par étape |
+| `Dockerfile`, `docker-compose.yml`, `Caddyfile`, `*.sh` | Mise en ligne sur un serveur (voir plus bas) |
 
 ## Installation locale (macOS)
 
@@ -60,10 +64,16 @@ Variables du fichier `.env` :
 | `LLM_MODE` | `local` (Ollama) ou `api` (Groq + fastembed) |
 | `GROQ_API_KEY` | Clé Groq, nécessaire en mode `api` ([console.groq.com/keys](https://console.groq.com/keys)) |
 | `DATABASE_URL` | Chaîne de connexion Supabase « Session pooler » (obligatoire) |
-| `ADMIN_PASSWORD` | Mot de passe de la page Admin (laisser vide pour la désactiver) |
+| `ADMIN_EMAILS` | E-mails des administrateurs (connexion Google), séparés par des virgules |
+| `ADMIN_PASSWORD` | Mode développeur seulement : mot de passe de la page Admin |
 | `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` | Facultatif : copie des retours sur Telegram |
 
 Le fichier `.env` n'est jamais versionné (voir `.gitignore`).
+
+**Connexion Google en local (facultatif).** Sans configuration, l'app démarre en *mode
+développeur* : un simple pseudo, pratique pour tester. Pour tester la vraie connexion,
+crée `.streamlit/secrets.toml` (ignoré par Git) avec la section `[auth]` décrite plus bas,
+et `redirect_uri = "http://localhost:8501/oauth2callback"`.
 
 ## Lancer
 
@@ -82,31 +92,72 @@ python test_fiche.py "une notion"       # génération de fiche
 python test_telegram.py                 # notification Telegram
 ```
 
-## Mise en ligne (Streamlit Community Cloud)
+## Mise en ligne (serveur Hetzner + nom de domaine)
 
-1. Pousser le dépôt sur GitHub (le `.gitignore` exclut `.env`, `data/` et `cours_exemple/`).
-2. Sur [share.streamlit.io](https://share.streamlit.io) : **Create app**, choisir le dépôt,
-   la branche `main` et le fichier `app.py`.
-3. Dans **Advanced settings** : Python 3.12, puis coller les secrets :
+L'app tourne dans Docker sur un petit serveur (VPS Hetzner CX23 : 2 vCPU, 4 Go de RAM).
+[Caddy](https://caddyserver.com) est placé devant : il obtient et renouvelle tout seul le
+certificat HTTPS pour le domaine, puis relaie les requêtes (et les websockets de Streamlit)
+vers l'app. Les données restent dans Supabase : le serveur ne stocke rien d'important.
 
-```toml
-LLM_MODE = "api"
-GROQ_API_KEY = "ta_cle"
-DATABASE_URL = "postgresql://postgres.xxxx:mot_de_passe@aws-0-eu-west-3.pooler.supabase.com:5432/postgres"
-ADMIN_PASSWORD = "ton_mot_de_passe"
-TELEGRAM_BOT_TOKEN = "ton_token"
-TELEGRAM_CHAT_ID = "ton_chat_id"
+| Fichier | Rôle |
+|---|---|
+| `Dockerfile` | Image de l'app (dépendances + modèle d'embeddings préchargé, utilisateur sans droits) |
+| `docker-compose.yml` | Les deux conteneurs : `app` (privé) et `caddy` (ports 80 et 443) |
+| `Caddyfile` | HTTPS automatique, redirection `www`, en-têtes de sécurité |
+| `setup_serveur.sh` | Préparation unique du serveur : Docker, utilisateur `deploy`, pare-feu, fail2ban, swap |
+| `deploy.sh` | Mise à jour : `git pull`, reconstruction, redémarrage, vérification |
+
+**Première installation**
+
+1. DNS du domaine : un enregistrement `A` pour `@` et un pour `www` vers l'IPv4 du serveur
+   (et `AAAA` vers l'IPv6).
+2. En root sur le serveur neuf (Ubuntu 24.04) : `bash setup_serveur.sh`, puis ajouter la clé
+   affichée dans **GitHub > Settings > Deploy keys** du dépôt.
+3. En `deploy` : `git clone git@github.com:<toi>/<depot>.git coach && cd coach`
+4. Créer les secrets, qui ne quittent jamais le serveur :
+   - `.env` : `DOMAIN`, `GROQ_API_KEY`, `DATABASE_URL`, `ADMIN_EMAILS`, `TELEGRAM_*`
+     (`LLM_MODE=api` est imposé par `docker-compose.yml`) ;
+   - `.streamlit/secrets.toml` : la section `[auth]` de la connexion Google (ci-dessous).
+5. `bash deploy.sh`
+
+**Mises à jour** : `git push` depuis ton ordinateur, puis sur le serveur `bash deploy.sh`.
+
+**Commandes utiles sur le serveur**
+
+```bash
+docker compose ps                      # état des conteneurs
+docker compose logs -f --tail 50 app   # logs de l'app en direct
+docker compose restart app             # redémarrer l'app (après un changement de secrets)
+docker stats --no-stream               # RAM et CPU utilisés
 ```
 
-Les secrets sont recopiés dans les variables d'environnement au démarrage (`llm.py`).
+**Connexion Google** (`.streamlit/secrets.toml` sur le serveur) :
+
+```toml
+[auth]
+redirect_uri = "https://ton-domaine.fr/oauth2callback"
+cookie_secret = "longue_chaine_aleatoire"
+client_id = "xxxx.apps.googleusercontent.com"
+client_secret = "xxxx"
+server_metadata_url = "https://accounts.google.com/.well-known/openid-configuration"
+```
+
+Le `client_id` et le `client_secret` viennent de Google Cloud Console (**Google Auth Platform >
+Clients**, type *Web application*), avec comme URI de redirection autorisées
+`https://ton-domaine.fr/oauth2callback` et `http://localhost:8501/oauth2callback`.
+Générer `cookie_secret` avec `python -c "import secrets; print(secrets.token_hex(32))"`.
+Fichier vide ou absent : l'app reste en mode développeur (pseudo).
+
 Les tables sont créées automatiquement au premier démarrage, dans un schéma privé `coach`
 que l'API publique de Supabase n'expose pas.
+
+*Alternative gratuite* : Streamlit Community Cloud (dépôt GitHub, secrets collés dans les
+réglages de l'app, section `[auth]` en dernier). Pas de domaine personnalisé.
 
 ## Limites connues
 
 - Projet Supabase gratuit : mis en pause après 7 jours sans activité (à réactiver depuis
   le tableau de bord, les données sont conservées), 500 Mo de base.
-- Le pseudo sépare les espaces mais n'est pas un mot de passe.
 - Quotas gratuits de Groq : en cas de dépassement, l'app bascule sur un autre modèle,
   puis demande de réessayer une minute plus tard.
 - PDF scannés (images) non pris en charge : il faut du texte sélectionnable.
@@ -114,5 +165,4 @@ que l'API publique de Supabase n'expose pas.
 
 ## Pistes
 
-Analyse des annales, planning d'examen, algorithme FSRS, comptes utilisateurs,
-OCR des PDF scannés.
+Analyse des annales, planning d'examen, algorithme FSRS, OCR des PDF scannés.
