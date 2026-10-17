@@ -1,10 +1,12 @@
 """
 db.py — Données de révision dans Postgres : questions de QCM (rangées par module), réponses,
-boîtes de Leitner, carte des notions de chaque module, retours des testeurs.
+boîtes de Leitner, carte des notions de chaque module, fiches enregistrées, retours des testeurs.
 
 Les utilisateurs sont identifiés par ingest.user_key(pseudo) (une empreinte du pseudo),
 jamais par le pseudo en clair. La connexion et le schéma sont gérés par storage.py.
 """
+
+import re
 
 from psycopg.types.json import Jsonb
 
@@ -119,11 +121,98 @@ def renommer_module(user: str, ancien: str, nouveau: str) -> None:
             (nouveau, user, ancien, nouveau),
         )
         conn.execute("DELETE FROM notions WHERE user_id = %s AND module = %s", (user, ancien))
+        # Même logique pour les fiches : en cas de doublon (même notion, même fichier), on garde celle du module cible.
+        conn.execute(
+            """UPDATE fiches f SET module = %s
+               WHERE f.user_id = %s AND f.module = %s
+                 AND NOT EXISTS (SELECT 1 FROM fiches c
+                                 WHERE c.user_id = f.user_id AND c.module = %s
+                                   AND c.notion_cle = f.notion_cle AND c.source = f.source)""",
+            (nouveau, user, ancien, nouveau),
+        )
+        conn.execute("DELETE FROM fiches WHERE user_id = %s AND module = %s", (user, ancien))
 
 
 def supprimer_carte(user: str, module: str) -> None:
     with storage.connexion() as conn:
         conn.execute("DELETE FROM notions WHERE user_id = %s AND module = %s", (user, module))
+
+
+# ---------------------------------------------------------------------------
+# Fiches de révision enregistrées (une par module, notion et fichier choisi ; source "" = tout le module)
+# ---------------------------------------------------------------------------
+CLE_NOTION = storage.CLE_NOTION_SQL.format("%s")  # même normalisation que la colonne notion_cle
+
+
+def _notion_propre(notion: str) -> str:
+    return re.sub(r"\s+", " ", notion).strip()
+
+
+def enregistrer_fiche(user: str, module: str, notion: str, source: str, contenu: dict) -> int:
+    """Enregistre la fiche ; si elle existe déjà (même notion, même fichier), elle est remplacée. Renvoie son id."""
+    with storage.connexion() as conn:
+        row = conn.execute(
+            """INSERT INTO fiches (user_id, module, notion, source, contenu) VALUES (%s, %s, %s, %s, %s)
+               ON CONFLICT (user_id, module, notion_cle, source)
+               DO UPDATE SET notion = EXCLUDED.notion, contenu = EXCLUDED.contenu, maj_le = now()
+               RETURNING id""",
+            (user, module, _notion_propre(notion), source, Jsonb(contenu)),
+        ).fetchone()
+    return row["id"]
+
+
+def fiches(user: str, module: str) -> list[dict]:
+    """Les fiches du module, les plus récentes d'abord : [{"id", "notion", "source", "contenu", "cree_le", "maj_le"}]."""
+    with storage.connexion() as conn:
+        rows = conn.execute(
+            """SELECT id, notion, source, contenu, cree_le, maj_le FROM fiches
+               WHERE user_id = %s AND module = %s ORDER BY maj_le DESC, id DESC""",
+            (user, module),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def trouver_fiche(user: str, module: str, notion: str, source: str) -> dict | None:
+    """La fiche déjà enregistrée pour cette notion (casse et espaces ignorés) et ce fichier, ou None."""
+    with storage.connexion() as conn:
+        row = conn.execute(
+            f"""SELECT id, notion, source, contenu, cree_le, maj_le FROM fiches
+                WHERE user_id = %s AND module = %s AND notion_cle = {CLE_NOTION} AND source = %s""",
+            (user, module, _notion_propre(notion), source),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def supprimer_fiche(user: str, fiche_id: int) -> bool:
+    """Supprime une fiche de cet utilisateur (jamais celle d'un autre). Renvoie True si elle existait."""
+    with storage.connexion() as conn:
+        return conn.execute("DELETE FROM fiches WHERE id = %s AND user_id = %s", (fiche_id, user)).rowcount > 0
+
+
+def supprimer_fiches_fichier(user: str, fichier: str) -> int:
+    """
+    Fichier supprimé ou réimporté : retire les fiches qui s'appuient sur ses anciens passages,
+    c'est-à-dire celles faites sur ce fichier, et celles faites sur tout le module dont un des
+    extraits (contenu -> "extraits" -> [{"source": …}]) vient de ce fichier. Renvoie le nombre retiré.
+    """
+    with storage.connexion() as conn:
+        return conn.execute(
+            """DELETE FROM fiches WHERE user_id = %s
+                 AND (source = %s OR contenu -> 'extraits' @> %s)""",
+            (user, fichier, Jsonb([{"source": fichier}])),
+        ).rowcount
+
+
+def supprimer_fiches_module(user: str, module: str, hors_cours_seulement: bool = False) -> int:
+    """
+    Toutes les fiches du module (quand son dernier fichier est supprimé), ou seulement celles
+    « pas dans le cours » (après l'import d'un fichier : la notion y est peut-être). Renvoie le nombre retiré.
+    """
+    filtre = " AND contenu ->> 'dans_le_cours' = 'false'" if hors_cours_seulement else ""
+    with storage.connexion() as conn:
+        return conn.execute(
+            f"DELETE FROM fiches WHERE user_id = %s AND module = %s{filtre}", (user, module)
+        ).rowcount
 
 
 # ---------------------------------------------------------------------------
@@ -404,6 +493,14 @@ def recuperer_pseudo(compte_id: str, pseudo: str) -> dict:
                    SELECT 1 FROM chunks n WHERE n.user_id = %s AND n.embedding_id = o.embedding_id AND n.id = o.id)""",
             (ancien, compte_id),
         )
+        # Ses fiches qui dépendent d'un fichier que le compte possède déjà partent aussi (même règle que
+        # supprimer_fiches_fichier) : elles citeraient l'ancienne version. Non comptées, comme ces passages.
+        conn.execute(
+            """DELETE FROM fiches f WHERE f.user_id = %s AND EXISTS (
+                   SELECT 1 FROM chunks c WHERE c.user_id = %s AND (f.source = c.source
+                     OR f.contenu -> 'extraits' @> jsonb_build_array(jsonb_build_object('source', c.source))))""",
+            (ancien, compte_id),
+        )
         bilan["passages"] = conn.execute(
             "UPDATE chunks SET user_id = %s WHERE user_id = %s", (compte_id, ancien)
         ).rowcount
@@ -418,6 +515,14 @@ def recuperer_pseudo(compte_id: str, pseudo: str) -> dict:
             (compte_id, ancien, compte_id),
         ).rowcount
         conn.execute("DELETE FROM notions WHERE user_id = %s", (ancien,))
+        # Fiches : si le compte a déjà une fiche sur la même notion et le même fichier, on garde la sienne.
+        bilan["fiches"] = conn.execute(
+            """UPDATE fiches o SET user_id = %s WHERE o.user_id = %s AND NOT EXISTS (
+                   SELECT 1 FROM fiches n WHERE n.user_id = %s AND n.module = o.module
+                     AND n.notion_cle = o.notion_cle AND n.source = o.source)""",
+            (compte_id, ancien, compte_id),
+        ).rowcount
+        conn.execute("DELETE FROM fiches WHERE user_id = %s", (ancien,))
 
         if not any(bilan.values()):
             raise RecuperationError("Aucune donnée trouvée pour ce pseudo.")  # annule la transaction

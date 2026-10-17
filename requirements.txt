@@ -7,3 +7,5 @@ python-dotenv==1.2.4
 # Base de données Postgres hébergée (Supabase) + recherche vectorielle pgvector
 psycopg[binary]==3.3.6
 psycopg-pool==3.3.3
+# Données de fuseaux horaires (heure de Paris) : indispensables si le système n'en a pas
+tzdata==2026.5

@@ -19,6 +19,7 @@ import hmac
 import io
 import os
 import re
+from zoneinfo import ZoneInfo
 
 import streamlit as st
 
@@ -38,6 +39,7 @@ ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "")
 EN_LIGNE = llm.LLM_MODE == "api"
 TOUS_LES_MODULES = "Tous les modules"
 NOUVEAU_MODULE = "Nouveau module…"
+PARIS = ZoneInfo("Europe/Paris")  # les dates sont stockées en UTC, affichées à l'heure française
 
 NIVEAUX = {  # code renvoyé par db.niveau() -> (libellé, couleur, icône)
     "maitrise": ("Maîtrisé", "green", ":material/check_circle:"),
@@ -144,6 +146,10 @@ def texte_donnees() -> str:
         "(et que le coach comprenne tes questions de suivi). « Nouvelle conversation » les efface."
     )
     lignes.append(
+        ":material/description: Tes fiches de révision sont enregistrées pour que tu les retrouves sans nouvel "
+        "appel à l'IA ; tu peux les supprimer dans la page Fiches."
+    )
+    lignes.append(
         ":material/forum: Tes réponses aux QCM, tes signalements et tes avis sont enregistrés pour améliorer l'app"
         + (" et transmis à son créateur." if notif.actif() else ".")
     )
@@ -208,7 +214,7 @@ def formulaire_recuperation(c: dict) -> None:
                     return
                 libelles = {"passages": "passages de cours", "questions": "questions", "reponses": "réponses",
                             "notions": "notions", "feedback": "avis", "signalements": "signalements",
-                            "messages_chat": "messages du chat"}
+                            "messages_chat": "messages du chat", "fiches": "fiches"}
                 detail = ", ".join(f"{n} {libelles.get(k, k)}" for k, n in bilan.items() if n)
                 toast_apres_rerun(f"Données récupérées : {detail}.")
                 st.rerun()
@@ -252,15 +258,20 @@ def barre_laterale() -> None:
 # ---------------------------------------------------------------------------
 @st.dialog("Supprimer ce fichier ?")
 def dialog_supprimer(nom: str, module: str) -> None:
-    st.write(f"**{nom}** sera retiré du module {module}. Les questions de QCM déjà créées restent dans ta progression.")
+    st.write(
+        f"**{nom}** sera retiré du module {module}, avec les fiches qui s'appuient sur ce fichier. "
+        "Les questions de QCM déjà créées restent dans ta progression."
+    )
     annuler, confirmer = st.columns(2)
     if annuler.button("Annuler", width="stretch"):
         st.rerun()
     if confirmer.button("Supprimer", type="primary", icon=":material/delete:", width="stretch"):
         ingest.delete_source(identifiant(), nom)
+        nb_fiches = db.supprimer_fiches_fichier(user(), nom)
         if module not in ingest.list_modules(identifiant()):  # dernier fichier du module : on retire sa carte
             db.supprimer_carte(user(), module)
-        toast_apres_rerun(f"{nom} supprimé.")
+            nb_fiches += db.supprimer_fiches_module(user(), module)
+        toast_apres_rerun(f"{nom} supprimé" + (f", ainsi que {nb_fiches} fiche(s)." if nb_fiches else "."))
         st.rerun()
 
 
@@ -343,11 +354,16 @@ def verifier_import(attente: list) -> None:
                     bilan.append(f":material/error: {nom} : {e}")
                     continue
                 dernier_module = stats["module"]
+                # Réimport : les fiches faites sur l'ancienne version partent. Nouveau cours : les fiches
+                # « pas dans le cours » du module aussi (la notion y est peut-être maintenant).
+                nb_fiches = db.supprimer_fiches_fichier(user(), nom)
+                nb_fiches += db.supprimer_fiches_module(user(), stats["module"], hors_cours_seulement=True)
+                fiches_retirees = f" ; {nb_fiches} ancienne(s) fiche(s) retirée(s), à refaire" if nb_fiches else ""
                 try:
                     nouvelles = generation.extraire_notions(identifiant(), stats["module"], nom)
-                    bilan.append(f":material/check: {nom} rangé dans **{stats['module']}**, {nouvelles} notion(s) ajoutée(s) à la carte")
+                    bilan.append(f":material/check: {nom} rangé dans **{stats['module']}**, {nouvelles} notion(s) ajoutée(s) à la carte{fiches_retirees}")
                 except (llm.LLMError, generation.GenerationError):
-                    bilan.append(f":material/check: {nom} rangé dans **{stats['module']}** (carte des notions à relancer plus tard)")
+                    bilan.append(f":material/check: {nom} rangé dans **{stats['module']}** (carte des notions à relancer plus tard){fiches_retirees}")
                 st.write(bilan[-1])
             statut.update(label="Import terminé", state="complete")
         attente.clear()
@@ -636,37 +652,114 @@ def page_qcm() -> None:
 # ---------------------------------------------------------------------------
 # Page « Fiches »
 # ---------------------------------------------------------------------------
-def afficher_fiche(fiche: dict, cle: str) -> None:
+TOUT_LE_MODULE = "Tout le module"  # choix « tous les fichiers » ; enregistré comme source "" en base
+
+
+def origine_fiche(source: str) -> str:
+    return source or TOUT_LE_MODULE
+
+
+@st.dialog("Supprimer cette fiche ?")
+def dialog_supprimer_fiche(ligne: dict) -> None:
+    st.write(
+        f"La fiche **{ligne['notion']}** ({origine_fiche(ligne['source'])}) sera supprimée. "
+        "Tu pourras la recréer, avec un nouvel appel à l'IA."
+    )
+    annuler, confirmer = st.columns(2)
+    if annuler.button("Annuler", width="stretch"):
+        st.rerun()
+    if confirmer.button("Supprimer", type="primary", icon=":material/delete:", width="stretch"):
+        db.supprimer_fiche(user(), ligne["id"])
+        toast_apres_rerun(f"Fiche {ligne['notion']} supprimée.")
+        st.rerun()
+
+
+def rediger_fiche(module: str, notion: str, source: str) -> int | None:
+    """Appel au LLM puis enregistrement (remplace la fiche existante). Renvoie l'id, ou None en cas d'erreur."""
+    with st.spinner("Rédaction de la fiche à partir de ton cours…"):
+        try:
+            contenu = generation.generer_fiche(identifiant(), notion, source or None, module)
+        except (llm.LLMError, generation.GenerationError) as e:
+            st.error(str(e), icon=":material/error:")
+            return None
+    return db.enregistrer_fiche(user(), module, notion, source, contenu)
+
+
+# Sections d'une fiche : (champ, titre, icône). L'icône aide à repérer chaque partie d'un coup d'œil ;
+# les pièges sont en orange, comme un avertissement.
+SECTIONS_FICHE = (
+    ("points_cles", "Points clés", ":primary[:material/key:]"),
+    ("formules", "Formules", ":primary[:material/function:]"),
+    ("pieges", "Pièges classiques", ":orange[:material/warning:]"),
+)
+
+
+def texte_extrait(texte: str) -> str:
+    """
+    Extrait de PDF affiché tel quel : sur une seule ligne, pour que ses retours à la ligne et ses
+    soulignements ne soient pas pris pour des titres ou des listes Markdown.
+    """
+    texte = " ".join(texte.split()).replace("$", r"\$")  # pas de formule LaTeX involontaire
+    texte = re.sub(r"^([#>*+-])", r"\\\1", texte)        # titre, citation ou puce en début de ligne
+    return re.sub(r"^(\d+)\.(?=\s)", r"\1\\.", texte)  # « 12. » (liste numérotée), mais pas « 1.5 V »
+
+
+def afficher_fiche(ligne: dict, module: str) -> None:
+    """Une fiche enregistrée : contenu sourcé, puis Télécharger / Régénérer / Supprimer."""
+    fiche = ligne["contenu"]
+
     def refs(element: dict) -> str:
-        return " " + "".join(f"[{n}]" for n in element["extraits"])
+        # Renvois vers les sources en gris : visibles sans gêner la lecture.
+        return " " + "".join(f":gray[\\[{n}\\]]" for n in element["extraits"])
 
     with st.container(border=True):
-        st.subheader(fiche["notion"])
+        # Titre = la notion demandée, le même libellé que dans la liste « Mes fiches ».
+        st.subheader(ligne["notion"])
+        st.caption(
+            f":material/folder: {origine_fiche(ligne['source'])} · "
+            f"mise à jour le {ligne['maj_le'].astimezone(PARIS):%d/%m/%Y}"  # stockée en UTC
+        )
         if not fiche["dans_le_cours"]:
             st.info(prompts.PAS_DANS_LE_COURS, icon=":material/search_off:")
-            return
-        if fiche["definition"]:
-            st.markdown("**Définition**")
-            st.markdown(fiche["definition"]["texte"] + refs(fiche["definition"]))
-        for champ, titre in (("points_cles", "Points clés"), ("formules", "Formules"), ("pieges", "Pièges classiques")):
-            if fiche[champ]:
-                st.markdown(f"**{titre}**")
-                st.markdown("\n".join(f"- {e['texte']}{refs(e)}" for e in fiche[champ]))
-        if fiche["retires"]:
-            st.caption(f":material/filter_alt: {fiche['retires']} élément(s) retiré(s) faute de source dans ton cours.")
+        else:
+            if fiche["definition"]:
+                st.markdown(":primary[:material/notes:] **Définition**")
+                st.markdown(fiche["definition"]["texte"] + refs(fiche["definition"]))
+            for champ, titre, icone in SECTIONS_FICHE:
+                if fiche[champ]:
+                    st.markdown(f"{icone} **{titre}**")
+                    st.markdown("\n".join(f"- {e['texte']}{refs(e)}" for e in fiche[champ]))
+            if fiche["retires"]:
+                st.caption(f":material/filter_alt: {fiche['retires']} élément(s) retiré(s) faute de source dans ton cours.")
+            # Même présentation que les sources de la page Questions.
+            with st.expander(f"Sources ({len(fiche['extraits'])})", icon=":material/menu_book:"):
+                for n, e in enumerate(fiche["extraits"], start=1):
+                    st.markdown(f"**[{n}]** {e['source']}, page {e['page']}")
+                    st.caption(texte_extrait(e["texte"]))
 
-        with st.expander("Sources", icon=":material/menu_book:"):
-            for n, e in enumerate(fiche["extraits"], start=1):
-                st.markdown(f"**[{n}]** {e['source']}, page {e['page']}")
-                st.caption(e["texte"])
-        st.download_button(
-            "Télécharger la fiche",
-            data=generation.fiche_markdown(fiche),
-            file_name=f"fiche_{re.sub(r'[^A-Za-z0-9]+', '_', fiche['notion'])}.md",
-            mime="text/markdown",
-            icon=":material/download:",
-            key=f"dl_{cle}",
-        )
+        # Actions sur une seule ligne, même sur téléphone (st.columns s'empilerait).
+        # Télécharger est l'action courante ; Régénérer et Supprimer restent discrètes.
+        with st.container(horizontal=True, vertical_alignment="center"):
+            if fiche["dans_le_cours"]:
+                # Nom du fichier = la notion de l'étudiant, accents gardés (« fiche_Détection_AM.md »).
+                nom_fichier = re.sub(r"[^\w-]+", "_", ligne["notion"]).strip("_")
+                st.download_button(
+                    "Télécharger",
+                    data=generation.fiche_markdown({**fiche, "notion": ligne["notion"]}),
+                    file_name=f"fiche_{nom_fichier}.md",
+                    mime="text/markdown",
+                    icon=":material/download:",
+                    help="Fichier texte (.md), sources comprises.",
+                    key=f"dl_{ligne['id']}",
+                )
+            regenerer = st.button("Régénérer", key=f"regen_{ligne['id']}", icon=":material/refresh:", type="tertiary",
+                                  help="Refait la fiche avec l'IA et remplace celle-ci.")
+            if st.button("Supprimer", key=f"suppr_fiche_{ligne['id']}", icon=":material/delete:", type="tertiary"):
+                dialog_supprimer_fiche(ligne)
+        # Hors de la ligne de boutons : le message d'attente ou d'erreur prend toute la largeur.
+        if regenerer and rediger_fiche(module, ligne["notion"], ligne["source"]) is not None:
+            toast_apres_rerun(f"Fiche {ligne['notion']} régénérée.")
+            st.rerun()
 
 
 def page_fiches() -> None:
@@ -674,29 +767,63 @@ def page_fiches() -> None:
     if sans_cours():
         return
     module = selecteur_module("fiches")
-    cle_notion = f"fiche_notion_{module}"
-    cle_pastilles = f"fiche_pastilles_{module}"
+    # Clés propres à l'utilisateur : après « Changer de pseudo », rien ne suit l'ancien.
+    cle_notion = f"fiche_notion_{user()}_{module}"
+    cle_pastilles = f"fiche_pastilles_{user()}_{module}"
+    cle_choix = f"fiche_choisie_{user()}_{module}"  # id de la fiche affichée dans « Mes fiches »
 
-    noms = [n["nom"] for n in db.carte_notions(user(), module)] or db.notions(user(), module)
-    if noms:
-        def recopier_notion() -> None:
-            st.session_state[cle_notion] = st.session_state.get(cle_pastilles) or ""
+    mes_fiches = db.fiches(user(), module)
 
-        st.pills("Notions du module", noms, key=cle_pastilles, on_change=recopier_notion)
-    notion = st.text_input("Notion", key=cle_notion, placeholder="Choisis une notion ci-dessus ou écris-en une")
-    tous = "Tout le module"
-    source = st.selectbox("Chercher dans", [tous] + sorted(ingest.list_sources(identifiant(), module)))
-    lancer = st.button("Créer la fiche", type="primary", icon=":material/description:", width="stretch")
+    # Création repliée dès qu'on a des fiches (comme « Nouveau QCM ») : sur téléphone, on arrive
+    # directement sur ses fiches au lieu de devoir dépasser le formulaire. L'état de départ est
+    # mémorisé : s'il changeait après la 1re fiche, le formulaire se refermerait au clic suivant.
+    ouvert = st.session_state.setdefault(f"fiche_form_ouvert_{user()}_{module}", not mes_fiches)
+    with st.expander("Nouvelle fiche", expanded=ouvert, icon=":material/add:"):
+        noms = [n["nom"] for n in db.carte_notions(user(), module)] or db.notions(user(), module)
+        if noms:
+            def recopier_notion() -> None:
+                st.session_state[cle_notion] = st.session_state.get(cle_pastilles) or ""
 
-    fiches = etat("fiches").setdefault(module, [])
-    if lancer:
-        with st.spinner("Rédaction de la fiche à partir de ton cours…"):
-            try:
-                fiches.insert(0, generation.generer_fiche(identifiant(), notion, None if source == tous else source, module))
-            except (llm.LLMError, generation.GenerationError) as e:
-                st.error(str(e), icon=":material/error:")
-    for i, fiche in enumerate(fiches):
-        afficher_fiche(fiche, f"{module}_{i}")
+            st.pills("Notions du module", noms, key=cle_pastilles, on_change=recopier_notion)
+        notion = st.text_input("Notion", key=cle_notion, placeholder="Choisis une notion ci-dessus ou écris-en une")
+        choix_source = st.selectbox("Chercher dans", [TOUT_LE_MODULE] + sorted(ingest.list_sources(identifiant(), module)))
+        source = "" if choix_source == TOUT_LE_MODULE else choix_source
+        if st.button("Créer la fiche", type="primary", icon=":material/description:", width="stretch"):
+            existante = db.trouver_fiche(user(), module, notion, source)
+            if existante:  # déjà faite : on la montre sans rappeler l'IA
+                st.session_state[cle_choix] = existante["id"]
+                st.info(
+                    f"Tu as déjà une fiche sur **{existante['notion']}** ({origine_fiche(source)}) : elle est "
+                    "affichée ci-dessous, sans nouvel appel à l'IA. Clique **Régénérer** pour la refaire.",
+                    icon=":material/bookmark:",
+                )
+            else:
+                fiche_id = rediger_fiche(module, notion, source)
+                if fiche_id is not None:
+                    st.session_state[cle_choix] = fiche_id
+                    mes_fiches = db.fiches(user(), module)  # la nouvelle fiche rejoint la liste
+
+    st.subheader(f"Mes fiches ({len(mes_fiches)})")
+    if not mes_fiches:
+        st.caption(
+            "Aucune fiche pour ce module. Crée-en une avec « Nouvelle fiche » : "
+            "tu la retrouveras ici à chaque visite, sur tous tes appareils."
+        )
+        return
+    par_id = {f["id"]: f for f in mes_fiches}
+    if st.session_state.get(cle_choix) not in par_id:  # fiche supprimée entre-temps : on revient à la plus récente
+        st.session_state.pop(cle_choix, None)
+    if len(par_id) > 1:  # une seule fiche : pas besoin de liste de choix
+        choisie = st.selectbox(
+            "Fiche affichée",
+            list(par_id),
+            format_func=lambda i: f"{par_id[i]['notion']} · {origine_fiche(par_id[i]['source'])}",
+            key=cle_choix,
+            label_visibility="collapsed",
+        )
+    else:
+        choisie = next(iter(par_id))
+    afficher_fiche(par_id[choisie], module)
 
 
 # ---------------------------------------------------------------------------

@@ -32,7 +32,11 @@ ordinateur et sur téléphone.
 3. **Faire un QCM.** Dans **QCM**, lance le mode **Automatique**, réponds, et rate exprès
    une ou deux questions. Relance un QCM : vise-t-il bien tes erreurs ?
 4. **Créer une fiche.** Dans **Fiches**, clique une notion puis **Créer la fiche**.
-   Compare 2 ou 3 lignes avec les extraits cités.
+   Compare 2 ou 3 lignes avec les extraits cités. Recharge la page : la fiche est-elle toujours
+   dans **Mes fiches** ? Ouvre **Nouvelle fiche** et redemande la même notion : l'app doit te
+   montrer la fiche enregistrée au lieu d'en refaire une. Essaie aussi **Régénérer** et **Supprimer**.
+   Importer un nouveau fichier dans le module retire les fiches marquées « pas dans le cours »
+   (la notion y est peut-être maintenant) : refais-les.
 5. **Regarder ta progression.** Dans **Progrès**, vérifie les couleurs par notion, puis lance
    **Revoir mes erreurs**.
 6. **Sur téléphone.** Ouvre le lien, connecte-toi avec le même compte Google : retrouves-tu
@@ -55,6 +59,7 @@ ordinateur et sur téléphone.
 | Tes PDF découpés en passages | Base de données de l'app (Supabase) | Retrouver les passages utiles à tes questions |
 | Extraits envoyés à l'IA | Groq, à chaque question ou génération | Rédiger les réponses, QCM et fiches |
 | Tes conversations du chat | Base de données de l'app (Supabase) | Les retrouver et comprendre tes questions de suivi (« Nouvelle conversation » les efface) |
+| Tes fiches de révision | Base de données de l'app (Supabase) | Les retrouver sans refaire appel à l'IA (supprimables dans **Fiches**, retirées avec le fichier dont elles viennent) |
 | Tes réponses aux QCM | Base de données de l'app (Supabase) | Calculer ta maîtrise et te reposer tes erreurs |
 | Tes signalements et avis | Base de données de l'app + copie à Alvin (Telegram) | Corriger les erreurs et améliorer l'app |
 

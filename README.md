@@ -18,6 +18,9 @@ Si l'information n'y est pas, elle le dit.
 - **QCM** : mode automatique (vise les notions à retravailler, fragiles ou jamais
   travaillées) ou personnalisé (fichier, notion). 4 choix, explication, source.
 - **Fiches** : définition, points clés, formules, pièges classiques, chaque ligne sourcée.
+  Les fiches sont enregistrées (« Mes fiches ») : on les retrouve sur tous ses appareils sans
+  nouvel appel à l'IA, on peut les régénérer ou les supprimer. Supprimer ou réimporter un
+  fichier retire les fiches qui s'appuient sur lui.
 - **Progrès** : maîtrise par notion (sur les 10 dernières réponses) et révision des erreurs
   avec des boîtes de Leitner.
 - **Comptes** : connexion avec Google ; chacun retrouve ses cours sur tous ses appareils.
@@ -36,7 +39,7 @@ Si l'information n'y est pas, elle le dit.
 | `rag.py` | Réponses aux questions avec citations, mémoire de conversation (reformulation des questions de suivi) |
 | `generation.py` | QCM, QCM adaptatif, fiches, rangement des PDF, carte des notions (JSON validé par pydantic) |
 | `prompts.py` | Tous les prompts, en français |
-| `db.py` | Questions, réponses, boîtes de Leitner, carte des notions, retours (Postgres) |
+| `db.py` | Questions, réponses, boîtes de Leitner, carte des notions, fiches enregistrées, retours (Postgres) |
 | `storage.py` | Connexion à la base Supabase (pool) et création du schéma `coach` |
 | `migrer_vers_supabase.py` | Migration unique de l'ancien stockage local (SQLite + ChromaDB) |
 | `notif.py` | Copie des signalements et avis sur Telegram |

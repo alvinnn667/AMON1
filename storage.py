@@ -7,6 +7,7 @@ Toutes les données de l'app vivent ici, de façon durable :
   - reponses     : réponses des étudiants
   - notions      : carte des notions de chaque module
   - messages_chat : conversations du chat (une par module), pour la mémoire et l'historique
+  - fiches       : fiches de révision enregistrées (une par notion et par fichier choisi)
   - signalements, feedback : retours des testeurs
 
 Les tables sont dans un schéma privé « coach » : l'API REST publique de Supabase n'expose
@@ -31,6 +32,11 @@ SCHEMA_APP = "coach"
 
 class StorageError(RuntimeError):
     """Erreur lisible, affichable telle quelle dans l'interface."""
+
+
+# Clé de comparaison d'un nom de notion : sans tenir compte de la casse ni des espaces en trop
+# (« Modulation  FM » = « modulation fm »). Utilisée par la table fiches et par db.py.
+CLE_NOTION_SQL = "btrim(lower(regexp_replace({}, '[[:space:]]+', ' ', 'g')))"
 
 
 SCHEMA_SQL = f"""
@@ -123,6 +129,21 @@ CREATE TABLE IF NOT EXISTS {SCHEMA_APP}.messages_chat (
     cree_le   TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS messages_chat_user_module ON {SCHEMA_APP}.messages_chat (user_id, module, id);
+
+CREATE TABLE IF NOT EXISTS {SCHEMA_APP}.fiches (
+    id         BIGSERIAL PRIMARY KEY,
+    user_id    TEXT NOT NULL,
+    module     TEXT NOT NULL,
+    notion     TEXT NOT NULL,              -- notion demandée par l'étudiant
+    notion_cle TEXT GENERATED ALWAYS AS ({CLE_NOTION_SQL.format('notion')}) STORED,
+    source     TEXT NOT NULL DEFAULT '',   -- fichier choisi, '' = tout le module
+    contenu    JSONB NOT NULL,             -- la fiche telle que renvoyée par generation.generer_fiche
+    cree_le    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    maj_le     TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+-- Une seule fiche par notion et par fichier choisi : régénérer remplace l'ancienne.
+-- L'index sert aussi à lister les fiches d'un module.
+CREATE UNIQUE INDEX IF NOT EXISTS fiches_unique ON {SCHEMA_APP}.fiches (user_id, module, notion_cle, source);
 
 CREATE TABLE IF NOT EXISTS {SCHEMA_APP}.feedback (
     id        BIGSERIAL PRIMARY KEY,
