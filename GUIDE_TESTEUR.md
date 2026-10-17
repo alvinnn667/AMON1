@@ -27,6 +27,8 @@ ordinateur et sur téléphone.
    - Les réponses sont-elles justes ?
    - Les sources (fichier et page) correspondent-elles vraiment ?
    - La question hors sujet est-elle bien refusée ?
+   - Enchaîne avec une question de suivi courte (« et sa formule ? », « donne un exemple »).
+     La ligne « Compris comme » reprend-elle bien ta question ? La réponse suit-elle la conversation ?
 3. **Faire un QCM.** Dans **QCM**, lance le mode **Automatique**, réponds, et rate exprès
    une ou deux questions. Relance un QCM : vise-t-il bien tes erreurs ?
 4. **Créer une fiche.** Dans **Fiches**, clique une notion puis **Créer la fiche**.
@@ -52,6 +54,7 @@ ordinateur et sur téléphone.
 | Ton e-mail et ton nom (compte Google) | Base de données de l'app (Supabase) | T'identifier et séparer tes cours de ceux des autres |
 | Tes PDF découpés en passages | Base de données de l'app (Supabase) | Retrouver les passages utiles à tes questions |
 | Extraits envoyés à l'IA | Groq, à chaque question ou génération | Rédiger les réponses, QCM et fiches |
+| Tes conversations du chat | Base de données de l'app (Supabase) | Les retrouver et comprendre tes questions de suivi (« Nouvelle conversation » les efface) |
 | Tes réponses aux QCM | Base de données de l'app (Supabase) | Calculer ta maîtrise et te reposer tes erreurs |
 | Tes signalements et avis | Base de données de l'app + copie à Alvin (Telegram) | Corriger les erreurs et améliorer l'app |
 

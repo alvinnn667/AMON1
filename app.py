@@ -140,6 +140,10 @@ def texte_donnees() -> str:
             "mais ce n'est pas un mot de passe."
         )
     lignes.append(
+        ":material/chat: Tes conversations du chat sont enregistrées pour que tu les retrouves "
+        "(et que le coach comprenne tes questions de suivi). « Nouvelle conversation » les efface."
+    )
+    lignes.append(
         ":material/forum: Tes réponses aux QCM, tes signalements et tes avis sont enregistrés pour améliorer l'app"
         + (" et transmis à son créateur." if notif.actif() else ".")
     )
@@ -203,8 +207,9 @@ def formulaire_recuperation(c: dict) -> None:
                     st.error(str(e))
                     return
                 libelles = {"passages": "passages de cours", "questions": "questions", "reponses": "réponses",
-                            "notions": "notions", "feedback": "avis", "signalements": "signalements"}
-                detail = ", ".join(f"{n} {libelles[k]}" for k, n in bilan.items() if n)
+                            "notions": "notions", "feedback": "avis", "signalements": "signalements",
+                            "messages_chat": "messages du chat"}
+                detail = ", ".join(f"{n} {libelles.get(k, k)}" for k, n in bilan.items() if n)
                 toast_apres_rerun(f"Données récupérées : {detail}.")
                 st.rerun()
 
@@ -424,6 +429,8 @@ def page_cours() -> None:
 # Page « Questions » (chat avec citations)
 # ---------------------------------------------------------------------------
 def afficher_reponse(res: dict) -> None:
+    if res.get("question_recherche"):  # question de suivi réécrite pour la recherche
+        st.caption(f":material/manage_search: Compris comme : {res['question_recherche']}")
     st.markdown(res["reponse"])
     if res.get("sans_citation"):
         st.warning("Cette réponse ne cite aucun passage : vérifie-la dans ton cours.", icon=":material/warning:")
@@ -440,14 +447,19 @@ def page_questions() -> None:
     if sans_cours():
         return
     module = selecteur_module("questions", tous=True)
-    historique = etat("historique").setdefault(module or TOUS_LES_MODULES, [])
+    cle_module = module or ""  # "" = conversation sur tous les modules
+    # La conversation est enregistrée : on la retrouve d'une visite et d'un appareil à l'autre.
+    historique = db.messages_chat(user(), cle_module)
 
     if historique:
         if st.button("Nouvelle conversation", icon=":material/add_comment:", type="tertiary"):
-            historique.clear()
+            db.effacer_conversation(user(), cle_module)
             st.rerun()
     elif module:
-        st.caption(f"Pose une question sur le module {module}. Chaque réponse cite le fichier et la page utilisés.")
+        st.caption(
+            f"Pose une question sur le module {module}. Chaque réponse cite le fichier et la page utilisés, "
+            "et tu peux enchaîner avec des questions de suivi (« et sa formule ? »)."
+        )
     else:
         st.caption("La recherche porte sur tous tes modules. Chaque source indique son module, son fichier et sa page.")
 
@@ -456,22 +468,23 @@ def page_questions() -> None:
             if msg["role"] == "user":
                 st.markdown(msg["contenu"])
             else:
-                afficher_reponse(msg["contenu"])
+                afficher_reponse({"reponse": msg["contenu"], **msg["details"]})
 
     question = st.chat_input("Ta question sur le cours")
     if question:
-        historique.append({"role": "user", "contenu": question})
         with st.chat_message("user", avatar=AVATARS["user"]):
             st.markdown(question)
         with st.chat_message("assistant", avatar=AVATARS["assistant"]):
             with st.spinner("Recherche dans tes cours…"):
                 try:
-                    res = rag.repondre(identifiant(), question, module)
+                    res = rag.repondre(identifiant(), question, module, historique=historique)
                     res["tous_modules"] = module is None
                 except llm.LLMError as e:
-                    res = {"reponse": f":material/error: {e}", "sources": []}
+                    st.error(str(e), icon=":material/error:")  # rien n'est enregistré : on peut reposer la question
+                    return
             afficher_reponse(res)
-        historique.append({"role": "assistant", "contenu": res})
+        details = {k: v for k, v in res.items() if k != "reponse"}
+        db.ajouter_echange(user(), cle_module, question, res["reponse"], details)
 
 
 # ---------------------------------------------------------------------------

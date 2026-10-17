@@ -106,9 +106,10 @@ def ajouter_notions(user: str, module: str, notions_extraites: list[dict]) -> in
 
 
 def renommer_module(user: str, ancien: str, nouveau: str) -> None:
-    """Reporte le nouveau nom sur les questions et la carte des notions (fusion si besoin)."""
+    """Reporte le nouveau nom sur les questions, la conversation et la carte des notions (fusion si besoin)."""
     with storage.connexion() as conn:
         conn.execute("UPDATE questions SET module = %s WHERE user_id = %s AND module = %s", (nouveau, user, ancien))
+        conn.execute("UPDATE messages_chat SET module = %s WHERE user_id = %s AND module = %s", (nouveau, user, ancien))
         # Les notions déjà présentes dans le module cible sont gardées, les autres sont déplacées.
         conn.execute(
             """UPDATE notions n SET module = %s
@@ -253,6 +254,40 @@ def questions_a_revoir(user: str, nb: int, notion: str | None = None, module: st
 
 
 # ---------------------------------------------------------------------------
+# Conversations du chat (une par module ; module "" = tous les modules)
+# ---------------------------------------------------------------------------
+MAX_MESSAGES_AFFICHES = 60
+
+
+def messages_chat(user: str, module: str, limite: int = MAX_MESSAGES_AFFICHES) -> list[dict]:
+    """Les derniers messages de la conversation, du plus ancien au plus récent."""
+    with storage.connexion() as conn:
+        rows = conn.execute(
+            """SELECT role, contenu, details FROM (
+                   SELECT id, role, contenu, details FROM messages_chat
+                   WHERE user_id = %s AND module = %s ORDER BY id DESC LIMIT %s
+               ) derniers ORDER BY id""",
+            (user, module, limite),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def ajouter_echange(user: str, module: str, question: str, reponse: str, details: dict) -> None:
+    """Enregistre la question et la réponse ensemble (une seule transaction)."""
+    with storage.connexion() as conn:
+        with conn.cursor() as cur:
+            cur.executemany(
+                "INSERT INTO messages_chat (user_id, module, role, contenu, details) VALUES (%s, %s, %s, %s, %s)",
+                [(user, module, "user", question, Jsonb({})), (user, module, "assistant", reponse, Jsonb(details))],
+            )
+
+
+def effacer_conversation(user: str, module: str) -> None:
+    with storage.connexion() as conn:
+        conn.execute("DELETE FROM messages_chat WHERE user_id = %s AND module = %s", (user, module))
+
+
+# ---------------------------------------------------------------------------
 # Retours des testeurs
 # ---------------------------------------------------------------------------
 MOTIFS_SIGNALEMENT = [
@@ -372,7 +407,7 @@ def recuperer_pseudo(compte_id: str, pseudo: str) -> dict:
         bilan["passages"] = conn.execute(
             "UPDATE chunks SET user_id = %s WHERE user_id = %s", (compte_id, ancien)
         ).rowcount
-        for table in ("questions", "reponses", "signalements", "feedback"):
+        for table in ("questions", "reponses", "signalements", "feedback", "messages_chat"):
             bilan[table] = conn.execute(
                 f"UPDATE {table} SET user_id = %s WHERE user_id = %s", (compte_id, ancien)
             ).rowcount

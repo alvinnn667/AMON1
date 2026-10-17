@@ -13,6 +13,8 @@ Si l'information n'y est pas, elle le dit.
   des notions du cours à partir de son plan.
 - **Questions** : réponses rédigées à partir des passages retrouvés (RAG), avec citations
   `[1]`, `[2]` vers le fichier et la page. Recherche dans un module ou dans tous.
+  Le chat a de la mémoire : on peut enchaîner (« et sa formule ? ») et la conversation est
+  conservée d'une visite à l'autre.
 - **QCM** : mode automatique (vise les notions à retravailler, fragiles ou jamais
   travaillées) ou personnalisé (fichier, notion). 4 choix, explication, source.
 - **Fiches** : définition, points clés, formules, pièges classiques, chaque ligne sourcée.
@@ -31,7 +33,7 @@ Si l'information n'y est pas, elle le dit.
 | `auth.py` | Connexion Google (`st.login`) et administrateurs par e-mail |
 | `llm.py` | Abstraction du LLM et des embeddings : mode `local` (Ollama) ou `api` (Groq + fastembed) |
 | `ingest.py` | Lecture des PDF (PyMuPDF), nettoyage, découpage, stockage et recherche vectorielle (pgvector) |
-| `rag.py` | Réponses aux questions avec citations |
+| `rag.py` | Réponses aux questions avec citations, mémoire de conversation (reformulation des questions de suivi) |
 | `generation.py` | QCM, QCM adaptatif, fiches, rangement des PDF, carte des notions (JSON validé par pydantic) |
 | `prompts.py` | Tous les prompts, en français |
 | `db.py` | Questions, réponses, boîtes de Leitner, carte des notions, retours (Postgres) |
@@ -161,7 +163,7 @@ réglages de l'app, section `[auth]` en dernier). Pas de domaine personnalisé.
 - Quotas gratuits de Groq : en cas de dépassement, l'app bascule sur un autre modèle,
   puis demande de réessayer une minute plus tard.
 - PDF scannés (images) non pris en charge : il faut du texte sélectionnable.
-- Chaque question du chat est traitée seule (pas de mémoire de la conversation).
+- Mémoire du chat limitée aux 3 derniers échanges (au-delà, le coach ne s'en souvient plus).
 
 ## Pistes
 

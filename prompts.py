@@ -18,7 +18,29 @@ Règles obligatoires :
    Si la réponse n'est que partielle, donne ce qui est dans les extraits et précise ce qui manque.
 4. Réponds en français, de façon claire et concise, comme un camarade qui explique.
 5. Recopie les formules telles qu'elles apparaissent dans les extraits (ω, Ω, Δf…).
+6. Les échanges précédents de la conversation servent seulement à comprendre la question
+   (à quoi renvoient « il », « ça », « et pour la FM ? »…). Ils ne sont PAS une source :
+   toute affirmation doit venir des extraits fournis avec la question actuelle.
 """
+
+
+# ---------------------------------------------------------------------------
+# Mémoire de conversation (étape 3 des améliorations)
+# ---------------------------------------------------------------------------
+SYSTEME_REFORMULATION = """Tu aides un moteur de recherche dans des cours.
+On te donne la fin d'une conversation entre un étudiant et son coach, puis la nouvelle question de l'étudiant.
+Réécris cette nouvelle question pour qu'elle soit compréhensible SEULE, sans la conversation :
+remplace « il », « ça », « cette formule », « et pour… » par ce qu'ils désignent.
+
+Règles :
+- Si la question est déjà compréhensible seule, recopie-la telle quelle.
+- Ne réponds PAS à la question, n'ajoute aucune information.
+- Une seule phrase, en français, sans guillemets ni explication."""
+
+
+def message_reformulation(echanges: list[dict], question: str) -> str:
+    lignes = [f"{'Étudiant' if m['role'] == 'user' else 'Coach'} : {m['contenu']}" for m in echanges]
+    return "Conversation :\n" + "\n".join(lignes) + f"\n\nNouvelle question : {question}\n\nQuestion réécrite :"
 
 
 def format_extraits(extraits: list[dict]) -> str:
@@ -29,12 +51,13 @@ def format_extraits(extraits: list[dict]) -> str:
     )
 
 
-def message_chat(question: str, extraits: list[dict]) -> str:
+def message_chat(question: str, extraits: list[dict], question_complete: str | None = None) -> str:
+    precision = f"\n(Autrement dit : {question_complete})" if question_complete else ""
     return f"""Extraits du cours :
 
 {format_extraits(extraits)}
 
-Question de l'étudiant : {question}"""
+Question de l'étudiant : {question}{precision}"""
 
 
 # ---------------------------------------------------------------------------

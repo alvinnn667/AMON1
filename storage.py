@@ -6,6 +6,7 @@ Toutes les données de l'app vivent ici, de façon durable :
   - questions    : QCM générés, avec leur boîte de Leitner
   - reponses     : réponses des étudiants
   - notions      : carte des notions de chaque module
+  - messages_chat : conversations du chat (une par module), pour la mémoire et l'historique
   - signalements, feedback : retours des testeurs
 
 Les tables sont dans un schéma privé « coach » : l'API REST publique de Supabase n'expose
@@ -111,6 +112,17 @@ CREATE TABLE IF NOT EXISTS {SCHEMA_APP}.pseudos_recuperes (
     compte_id  TEXT NOT NULL REFERENCES {SCHEMA_APP}.comptes(id) ON DELETE CASCADE,
     recupere_le TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+CREATE TABLE IF NOT EXISTS {SCHEMA_APP}.messages_chat (
+    id        BIGSERIAL PRIMARY KEY,
+    user_id   TEXT NOT NULL,
+    module    TEXT NOT NULL,               -- '' = conversation sur tous les modules
+    role      TEXT NOT NULL CHECK (role IN ('user', 'assistant')),
+    contenu   TEXT NOT NULL,
+    details   JSONB NOT NULL DEFAULT '{{}}'::jsonb,  -- sources citées, alertes…
+    cree_le   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS messages_chat_user_module ON {SCHEMA_APP}.messages_chat (user_id, module, id);
 
 CREATE TABLE IF NOT EXISTS {SCHEMA_APP}.feedback (
     id        BIGSERIAL PRIMARY KEY,
