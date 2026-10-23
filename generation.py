@@ -201,7 +201,7 @@ def _rediger_qcm(
         except llm.LLMError:
             if questions:
                 break  # quota atteint en cours de route : on garde les questions déjà prêtes (soyez pas gourmand(e)s aussi)
-            raise
+            raise 
 
         for brut in lot.questions:
             if len(questions) >= nb:
