@@ -176,7 +176,7 @@ def _rediger_qcm(
 
     questions: list[dict] = []
     deja_posees: set[str] = set()
-    appels_max = nb_groupes + RELANCES_MAX  # ex : 10 questions -> 2 lots + 3 relances au plus
+    appels_max = nb_groupes + RELANCES_MAX  # ex : 10 questions -> 2 lots + 3 relances au plus (je ne sais pas si c'est le meilleur calcul, mais ça marche)
     for appel in range(appels_max):
         if len(questions) >= nb:
             break
@@ -196,11 +196,11 @@ def _rediger_qcm(
                     },
                 ],
                 schema=LotQCMBrut,
-                temperature=min(0.5 + 0.1 * appel, 0.8),  # un peu plus de variété à chaque relance
+                temperature=min(0.5 + 0.1 * appel, 0.8),  # un peu plus de variété à chaque relance afin reste à tester 
             )
         except llm.LLMError:
             if questions:
-                break  # quota atteint en cours de route : on garde les questions déjà prêtes
+                break  # quota atteint en cours de route : on garde les questions déjà prêtes (soyez pas gourmand(e)s aussi)
             raise
 
         for brut in lot.questions:

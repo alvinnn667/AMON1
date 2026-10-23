@@ -77,4 +77,4 @@ ordinateur et sur téléphone.
 | Tes signalements et avis | Base de données de l'app + copie à Alvin (Telegram) | Corriger les erreurs et améliorer l'app |
 
 Tes cours, réponses et avis sont rattachés à un identifiant de compte anonyme (une empreinte
-de ton identifiant Google), pas directement à ton e-mail. Personne d'autre ne peut voir tes cours.
+de ton identifiant Google), pas directement à ton e-mail. Personne d'autre ne peut voir tes cours.  
