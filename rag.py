@@ -22,7 +22,7 @@ import prompts
 
 NB_EXTRAITS = 5  # nombre de chunks donnés au LLM
 MEMOIRE_ECHANGES = 3  # nombre de questions/réponses précédentes renvoyées au LLM
-TEMPERATURE = 0.1  # peu de créativité : on veut de la fidélité au cours
+TEMPERATURE = 0.3  # peu de créativité : on veut de la fidélité au cours
 TAILLE_MAX_MESSAGE = 700  # caractères gardés par message de l'historique (coût et limite de contexte)
 
 # Citations d'une réponse : [2], [1, 3] (cours) ou [W1], [W1, W2] (web).
